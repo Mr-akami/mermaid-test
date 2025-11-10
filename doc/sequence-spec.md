@@ -183,3 +183,14 @@ mirrorActors: display actors top and bottom
 Fonts: actorFontSize, actorFontFamily, actorFontWeight, noteFontSize, noteFontFamily, noteFontWeight, messageF ontSize, messageFontFamily, messageFontWeight
 
 The editor should preserve these settings per diagram and apply them to Mermaid output.
+
+操作性
+* participantやactorはアイコンをクリックし、キャンバスに表示される
+* participantやactorはドラッグで動かすことができる
+* Edgeはparticipantやactorなどから下に伸びる線をクリックし、次にクリックした伸びる線に矢印をつけて設置する
+* Edgeはドラッグで上下に動かすことができる
+* EdgeはStart, end部分の順番を覚えており、他Edgeとの位置を把握できる
+* 一度設定されたparticipant, actor, edgeのプロパティは、プロパティウインドウから変更できる
+* altやopt等はマウスで選択した部分を囲むように作成することができ、その範囲内のEdgeやparticipant, actorを把握することができる
+* altやopt等はサイズを変更することができ、変更後の範囲内のオブジェクトを再度把握することができる
+* ２DでのGUI操作のみ必要

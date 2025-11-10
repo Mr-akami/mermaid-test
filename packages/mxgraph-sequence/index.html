@@ -4,7 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>mxgraph-sequence</title>
+    <title>Sequence Diagram Editor (mxGraph)</title>
+    <script>
+      // Configure mxGraph before loading
+      window.mxBasePath = '/mxgraph/src';
+      window.mxLoadResources = false;
+      window.mxForceIncludes = false;
+      window.mxLoadStylesheets = true;
+    </script>
+    <script src="/mxgraph/mxClient.js"></script>
   </head>
   <body>
     <div id="app"></div>

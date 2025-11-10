@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# mxGraph library (copied from node_modules)
+public/mxgraph
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
