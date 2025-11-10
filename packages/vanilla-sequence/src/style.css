@@ -1,0 +1,80 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* SVG要素のスタイル */
+.participant {
+  cursor: pointer;
+}
+
+.participant:hover rect {
+  stroke-width: 3;
+}
+
+.message {
+  cursor: pointer;
+}
+
+.message:hover line {
+  stroke-width: 3;
+}
+
+.lifeline {
+  pointer-events: none;
+}
+
+.note {
+  cursor: pointer;
+}
+
+.block {
+  cursor: pointer;
+}
+
+.activation {
+  pointer-events: none;
+}
+
+/* ツールバーボタンのホバー効果 */
+button:hover {
+  opacity: 0.9;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+/* スクロールバーのスタイリング */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
