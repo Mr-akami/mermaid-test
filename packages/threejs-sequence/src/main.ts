@@ -140,46 +140,36 @@ class SequenceEditorApp {
   private addNote(): void {
     const participants = this.model.getOrderedParticipants();
     if (participants.length < 1) {
-      alert('Please add at least 1 participant first');
+      // Silently return, user can see there are no participants
       return;
     }
 
-    const participantId = prompt(`Enter participant (${participants.map(p => p.id).join(', ')}):`);
-    if (!participantId) return;
-
-    const position = prompt('Enter position (left, right, over):', 'right');
-    if (!position || !['left', 'right', 'over'].includes(position)) return;
-
-    const text = prompt('Enter note text:');
-    if (!text) return;
+    // Create note with default values (will be edited in PropertyPanel)
+    const participantId = participants[0].id;
 
     this.model.addStatement({
-      position: position as 'left' | 'right' | 'over',
+      position: 'right',
       participants: [participantId],
-      text
+      text: 'Note text'
     });
   }
 
   private addLoop(): void {
-    const label = prompt('Enter loop label:');
-    if (!label) return;
-
+    // Create loop with default label (will be edited in PropertyPanel)
     this.model.addStatement({
       type: 'loop',
-      label,
+      label: 'Loop',
       statements: []
     });
   }
 
   private addAlt(): void {
-    const condition = prompt('Enter condition:');
-    if (!condition) return;
-
+    // Create alt with default condition (will be edited in PropertyPanel)
     this.model.addStatement({
       type: 'alt',
       branches: [
         {
-          condition,
+          condition: 'Condition',
           statements: []
         }
       ]
@@ -204,7 +194,7 @@ class SequenceEditorApp {
 
     // Also copy to clipboard
     navigator.clipboard.writeText(mermaidCode).then(() => {
-      alert('Mermaid code copied to clipboard!');
+      console.log('Mermaid code copied to clipboard');
     }).catch(() => {
       console.log('Failed to copy to clipboard');
     });

@@ -35,8 +35,14 @@ export class Canvas2DRenderer {
   // Message positions (y-coordinate, can be dragged vertically)
   private messagePositions: Map<number, number> = new Map(); // index -> y position
 
+  // Note positions (can be dragged)
+  private notePositions: Map<number, Point> = new Map(); // index -> position
+
   // Draggable elements for hit testing
   private elements: DraggableElement[] = [];
+
+  // Selected message for edge reconnection
+  private selectedMessage: { message: Message; index: number; y: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement, model: DiagramModel) {
     this.canvas = canvas;
@@ -120,6 +126,14 @@ export class Canvas2DRenderer {
    */
   updateParticipantPosition(participantId: string, position: Point): void {
     this.participantPositions.set(participantId, position);
+    this.render();
+  }
+
+  /**
+   * Update note position (for dragging)
+   */
+  updateNotePosition(index: number, position: Point): void {
+    this.notePositions.set(index, position);
     this.render();
   }
 
@@ -223,19 +237,37 @@ export class Canvas2DRenderer {
       if (index === structureIndex) return; // Skip self
 
       if ('sender' in stmt && 'receiver' in stmt) {
+        const message = stmt as any;
         const messageY = this.messagePositions.get(index);
         if (messageY !== undefined) {
-          const isInside = messageY >= bounds.y + 25 && messageY <= bounds.y + bounds.height - 10;
+          // Get participant positions for both sender and receiver
+          const senderPos = this.participantPositions.get(message.sender);
+          const receiverPos = this.participantPositions.get(message.receiver);
 
-          if (isInside) {
-            // Check if not already in structure
-            const alreadyExists = existingMessages.some((msg: any) =>
-              msg.sender === stmt.sender && msg.receiver === stmt.receiver && msg.text === stmt.text
-            );
+          if (senderPos && receiverPos) {
+            // Calculate message endpoints X coordinates
+            const senderX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
+            const receiverX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
+            const minX = Math.min(senderX, receiverX);
+            const maxX = Math.max(senderX, receiverX);
 
-            if (!alreadyExists) {
-              existingMessages.push(stmt);
-              messagesToRemove.push(index);
+            // Check if BOTH endpoints are fully inside the structure bounds
+            const isFullyInside =
+              messageY >= bounds.y + 25 &&
+              messageY <= bounds.y + bounds.height - 10 &&
+              minX >= bounds.x &&
+              maxX <= bounds.x + bounds.width;
+
+            if (isFullyInside) {
+              // Check if not already in structure
+              const alreadyExists = existingMessages.some((msg: any) =>
+                msg.sender === stmt.sender && msg.receiver === stmt.receiver && msg.text === stmt.text
+              );
+
+              if (!alreadyExists) {
+                existingMessages.push(stmt);
+                messagesToRemove.push(index);
+              }
             }
           }
         }
@@ -267,21 +299,39 @@ export class Canvas2DRenderer {
 
     if (!message || !('sender' in message)) return;
 
-    // Find which structure (if any) should contain this message based on Y coordinate
+    // Find which structure (if any) should contain this message based on full containment
     let targetStructureIndex: number | null = null;
     let targetStructure: any = null;
 
-    statements.forEach((stmt, index) => {
-      if ('type' in stmt && stmt.type && (stmt as any).bounds) {
-        const bounds = (stmt as any).bounds;
-        const isInside = messageY >= bounds.y + 25 && messageY <= bounds.y + bounds.height - 10;
+    // Get participant positions for both sender and receiver
+    const senderPos = this.participantPositions.get(message.sender);
+    const receiverPos = this.participantPositions.get(message.receiver);
 
-        if (isInside) {
-          targetStructureIndex = index;
-          targetStructure = stmt;
+    if (senderPos && receiverPos) {
+      // Calculate message endpoints X coordinates
+      const senderX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
+      const receiverX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
+      const minX = Math.min(senderX, receiverX);
+      const maxX = Math.max(senderX, receiverX);
+
+      statements.forEach((stmt, index) => {
+        if ('type' in stmt && stmt.type && (stmt as any).bounds) {
+          const bounds = (stmt as any).bounds;
+
+          // Check if BOTH endpoints are fully inside the structure bounds
+          const isFullyInside =
+            messageY >= bounds.y + 25 &&
+            messageY <= bounds.y + bounds.height - 10 &&
+            minX >= bounds.x &&
+            maxX <= bounds.x + bounds.width;
+
+          if (isFullyInside) {
+            targetStructureIndex = index;
+            targetStructure = stmt;
+          }
         }
-      }
-    });
+      });
+    }
 
     // Check if message is currently in a structure or at top level
     let currentLocation: { type: 'top-level' | 'structure'; structure?: any; index?: number } | null = null;
@@ -639,6 +689,9 @@ export class Canvas2DRenderer {
 
     // Draw notes
     this.drawNotes();
+
+    // Draw edge handles for selected message
+    this.drawEdgeHandles();
   }
 
   private drawParticipants(): void {
@@ -1026,29 +1079,40 @@ export class Canvas2DRenderer {
     const participantPos = this.participantPositions.get(note.participants[0]);
     if (!participantPos) return;
 
-    // Find approximate Y position (based on statement index)
-    const statements = this.model.getStatements();
-    let yOffset = 0;
-    for (let i = 0; i < index; i++) {
-      if ('sender' in statements[i]) {
-        yOffset += this.MESSAGE_SPACING;
-      }
-    }
-
-    const y = this.MARGIN_TOP + this.PARTICIPANT_HEIGHT + 50 + yOffset;
-
-    // Calculate X position based on note position
-    let x: number;
     const noteWidth = 150;
     const noteHeight = 60;
 
-    if (note.position === 'left') {
-      x = participantPos.x - noteWidth - 20;
-    } else if (note.position === 'right') {
-      x = participantPos.x + this.PARTICIPANT_WIDTH + 20;
+    // Check if note has been dragged
+    let x: number;
+    let y: number;
+    const savedPosition = this.notePositions.get(index);
+
+    if (savedPosition) {
+      // Use saved position
+      x = savedPosition.x;
+      y = savedPosition.y;
     } else {
-      // over
-      x = participantPos.x + this.PARTICIPANT_WIDTH / 2 - noteWidth / 2;
+      // Calculate default position
+      // Find approximate Y position (based on statement index)
+      const statements = this.model.getStatements();
+      let yOffset = 0;
+      for (let i = 0; i < index; i++) {
+        if ('sender' in statements[i]) {
+          yOffset += this.MESSAGE_SPACING;
+        }
+      }
+
+      y = this.MARGIN_TOP + this.PARTICIPANT_HEIGHT + 50 + yOffset;
+
+      // Calculate X position based on note position
+      if (note.position === 'left') {
+        x = participantPos.x - noteWidth - 20;
+      } else if (note.position === 'right') {
+        x = participantPos.x + this.PARTICIPANT_WIDTH + 20;
+      } else {
+        // over
+        x = participantPos.x + this.PARTICIPANT_WIDTH / 2 - noteWidth / 2;
+      }
     }
 
     this.ctx.save();
@@ -1085,11 +1149,107 @@ export class Canvas2DRenderer {
       type: 'note',
       id: `note-${index}`,
       bounds: { x, y, width: noteWidth, height: noteHeight },
-      data: note
+      data: { note, index }
     });
   }
 
   dispose(): void {
     window.removeEventListener('resize', () => this.resizeCanvas());
+  }
+
+  // Edge reconnection support
+  setSelectedMessage(message: Message | null, index: number | null): void {
+    if (message && index !== null) {
+      // Find the message element to get its y position
+      // Match by both index and message content to handle messages inside structures
+      const element = this.elements.find(
+        el => el.type === 'message' &&
+              el.data.message.sender === message.sender &&
+              el.data.message.receiver === message.receiver &&
+              el.data.message.text === message.text
+      );
+      if (element) {
+        this.selectedMessage = {
+          message,
+          index,
+          y: element.data.y
+        };
+      }
+    } else {
+      this.selectedMessage = null;
+    }
+    this.render();
+  }
+
+  getSelectedMessage(): { message: Message; index: number; y: number } | null {
+    return this.selectedMessage;
+  }
+
+  getEdgeHandle(point: Point): { type: 'start' | 'end'; message: Message; index: number } | null {
+    if (!this.selectedMessage) return null;
+
+    const { message, index, y } = this.selectedMessage;
+    const senderPos = this.participantPositions.get(message.sender);
+    const receiverPos = this.participantPositions.get(message.receiver);
+
+    if (!senderPos || !receiverPos) return null;
+
+    const fromX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
+    const toX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
+    const handleRadius = 8;
+
+    // Check start handle
+    const startDist = Math.sqrt(
+      Math.pow(point.x - fromX, 2) + Math.pow(point.y - y, 2)
+    );
+    if (startDist <= handleRadius) {
+      return { type: 'start', message, index };
+    }
+
+    // Check end handle
+    const endDist = Math.sqrt(
+      Math.pow(point.x - toX, 2) + Math.pow(point.y - y, 2)
+    );
+    if (endDist <= handleRadius) {
+      return { type: 'end', message, index };
+    }
+
+    return null;
+  }
+
+  private drawEdgeHandles(): void {
+    if (!this.selectedMessage) return;
+
+    const { message, y } = this.selectedMessage;
+    const senderPos = this.participantPositions.get(message.sender);
+    const receiverPos = this.participantPositions.get(message.receiver);
+
+    if (!senderPos || !receiverPos) return;
+
+    const fromX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
+    const toX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
+    const handleRadius = 8;
+
+    this.ctx.save();
+
+    // Draw start handle
+    this.ctx.beginPath();
+    this.ctx.arc(fromX, y, handleRadius, 0, 2 * Math.PI);
+    this.ctx.fillStyle = '#3498db';
+    this.ctx.fill();
+    this.ctx.strokeStyle = '#2980b9';
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+
+    // Draw end handle
+    this.ctx.beginPath();
+    this.ctx.arc(toX, y, handleRadius, 0, 2 * Math.PI);
+    this.ctx.fillStyle = '#3498db';
+    this.ctx.fill();
+    this.ctx.strokeStyle = '#2980b9';
+    this.ctx.lineWidth = 2;
+    this.ctx.stroke();
+
+    this.ctx.restore();
   }
 }

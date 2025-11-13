@@ -150,19 +150,28 @@ export class PropertyPanel {
       }
     ));
 
+    // Get all participants for dropdown
+    const participants = this.model.getOrderedParticipants();
+    const participantOptions = participants.map(p => ({
+      value: p.id,
+      label: p.label || p.id
+    }));
+
     // Sender
-    this.element.appendChild(this.createInput(
+    this.element.appendChild(this.createSelect(
       'From',
       message.sender,
+      participantOptions,
       (value) => {
         this.model.updateStatement(index, { ...message, sender: value });
       }
     ));
 
     // Receiver
-    this.element.appendChild(this.createInput(
+    this.element.appendChild(this.createSelect(
       'To',
       message.receiver,
+      participantOptions,
       (value) => {
         this.model.updateStatement(index, { ...message, receiver: value });
       }
@@ -178,6 +187,27 @@ export class PropertyPanel {
   private renderNoteProperties(note: Note, index: number): void {
     const title = this.createTitle('Note Properties');
     this.element.appendChild(title);
+
+    // Get all participants for dropdown
+    const participants = this.model.getOrderedParticipants();
+    const participantOptions = participants.map(p => ({
+      value: p.id,
+      label: p.label || p.id
+    }));
+
+    // Participant
+    this.element.appendChild(this.createSelect(
+      'Participant',
+      note.participants[0] || '',
+      participantOptions,
+      (value) => {
+        const statements = this.model.getStatements();
+        const stmt = statements[index];
+        if ('position' in stmt) {
+          this.model.updateStatement(index, { ...stmt, participants: [value] });
+        }
+      }
+    ));
 
     // Position
     this.element.appendChild(this.createSelect(

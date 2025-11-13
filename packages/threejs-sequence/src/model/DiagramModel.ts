@@ -43,6 +43,25 @@ export class DiagramModel {
     return this.diagram.statements;
   }
 
+  // ID generation
+  generateId(prefix: string): string {
+    const existingIds = this.diagram.participants.map(p => p.id);
+    const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+    let maxNumber = 0;
+
+    existingIds.forEach(id => {
+      const match = id.match(pattern);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNumber) {
+          maxNumber = num;
+        }
+      }
+    });
+
+    return `${prefix}-${String(maxNumber + 1).padStart(2, '0')}`;
+  }
+
   // Participant operations
   addParticipant(participant: Participant): void {
     this.diagram.participants.push(participant);

@@ -1,7 +1,7 @@
 import type { DiagramModel } from '../model/DiagramModel';
 import type { Canvas2DRenderer, Point, DraggableElement } from '../renderer/Canvas2DRenderer';
 import type { SelectedElement } from '../ui/PropertyPanel';
-import type { ArrowType } from '../model/types';
+import type { ArrowType, Message } from '../model/types';
 
 type InteractionMode = 'select' | 'add-participant' | 'add-actor' | 'create-edge' | 'rectangle-select';
 
@@ -40,6 +40,11 @@ export class Canvas2DInteractionHandler {
 
   // Add participant/actor state
   private pendingParticipantType: 'participant' | 'actor' | null = null;
+
+  // Edge handle dragging state
+  private isDraggingEdgeHandle = false;
+  private edgeHandleType: 'start' | 'end' | null = null;
+  private edgeHandleMessage: { message: Message; index: number } | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -101,6 +106,16 @@ export class Canvas2DInteractionHandler {
     const point = this.getCanvasPoint(e);
 
     if (this.mode === 'select') {
+      // Check if clicking on edge handle first
+      const edgeHandle = this.renderer.getEdgeHandle(point);
+      if (edgeHandle) {
+        this.isDraggingEdgeHandle = true;
+        this.edgeHandleType = edgeHandle.type;
+        this.edgeHandleMessage = { message: edgeHandle.message, index: edgeHandle.index };
+        this.canvas.style.cursor = 'grabbing';
+        return;
+      }
+
       const element = this.renderer.getElementAtPoint(point);
 
       if (element) {
@@ -113,6 +128,8 @@ export class Canvas2DInteractionHandler {
             this.resizeHandle = handle;
             this.resizeStartBounds = { ...element.bounds };
             this.dragStartPoint = point;
+            // Clear edge handles when resizing
+            this.renderer.setSelectedMessage(null, null);
             return;
           }
         }
@@ -121,6 +138,11 @@ export class Canvas2DInteractionHandler {
         this.isDragging = true;
         this.dragElement = element;
         this.dragStartPoint = point;
+
+        // Clear edge handles when dragging non-message elements
+        if (element.type !== 'message') {
+          this.renderer.setSelectedMessage(null, null);
+        }
 
         if (element.type === 'participant') {
           this.dragOffset = {
@@ -133,6 +155,11 @@ export class Canvas2DInteractionHandler {
             y: point.y - element.bounds.y
           };
         } else if (element.type === 'controlStructure') {
+          this.dragOffset = {
+            x: point.x - element.bounds.x,
+            y: point.y - element.bounds.y
+          };
+        } else if (element.type === 'note') {
           this.dragOffset = {
             x: point.x - element.bounds.x,
             y: point.y - element.bounds.y
@@ -172,7 +199,16 @@ export class Canvas2DInteractionHandler {
   private onMouseMove(e: MouseEvent): void {
     const point = this.getCanvasPoint(e);
 
-    if (this.isResizing && this.resizeElement && this.resizeHandle && this.dragStartPoint && this.resizeStartBounds) {
+    if (this.isDraggingEdgeHandle) {
+      // Update cursor during edge handle drag
+      const lifeline = this.renderer.getLifelineAtPoint(point);
+      if (lifeline) {
+        this.canvas.style.cursor = 'alias'; // Valid drop target
+      } else {
+        this.canvas.style.cursor = 'not-allowed'; // Invalid drop target
+      }
+      return;
+    } else if (this.isResizing && this.resizeElement && this.resizeHandle && this.dragStartPoint && this.resizeStartBounds) {
       // Resize control structure
       const dx = point.x - this.dragStartPoint.x;
       const dy = point.y - this.dragStartPoint.y;
@@ -242,6 +278,12 @@ export class Canvas2DInteractionHandler {
         this.dragElement.bounds = newBounds;
         // Don't persist to model during drag to avoid frequent updates
         this.renderer.updateControlStructureBounds(this.dragElement.data.index, newBounds, false, false);
+      } else if (this.dragElement.type === 'note') {
+        // Drag note
+        this.renderer.updateNotePosition(this.dragElement.data.index, {
+          x: point.x - this.dragOffset.x,
+          y: point.y - this.dragOffset.y
+        });
       }
     }
 
@@ -252,7 +294,14 @@ export class Canvas2DInteractionHandler {
     }
 
     // Update cursor based on hover
-    if (this.mode === 'select' && !this.isDragging && !this.isResizing) {
+    if (this.mode === 'select' && !this.isDragging && !this.isResizing && !this.isDraggingEdgeHandle) {
+      // Check for edge handle hover
+      const edgeHandle = this.renderer.getEdgeHandle(point);
+      if (edgeHandle) {
+        this.canvas.style.cursor = 'grab';
+        return;
+      }
+
       const element = this.renderer.getElementAtPoint(point);
       if (element && element.type === 'controlStructure') {
         const handle = this.getResizeHandle(point, element);
@@ -278,6 +327,35 @@ export class Canvas2DInteractionHandler {
   }
 
   private onMouseUp(e: MouseEvent): void {
+    const point = this.getCanvasPoint(e);
+    const wasDragging = this.isDragging;
+    const wasResizing = this.isResizing;
+    const wasDraggingEdgeHandle = this.isDraggingEdgeHandle;
+
+    if (this.isDraggingEdgeHandle && this.edgeHandleMessage && this.edgeHandleType) {
+      const lifeline = this.renderer.getLifelineAtPoint(point);
+
+      if (lifeline) {
+        // Update the message connection
+        const updatedMessage = { ...this.edgeHandleMessage.message };
+        if (this.edgeHandleType === 'start') {
+          updatedMessage.sender = lifeline;
+        } else {
+          updatedMessage.receiver = lifeline;
+        }
+
+        this.model.updateStatement(this.edgeHandleMessage.index, updatedMessage);
+
+        // Update the selected message in renderer
+        this.renderer.setSelectedMessage(updatedMessage, this.edgeHandleMessage.index);
+      }
+
+      this.isDraggingEdgeHandle = false;
+      this.edgeHandleType = null;
+      this.edgeHandleMessage = null;
+      this.canvas.style.cursor = 'default';
+    }
+
     if (this.isDragging) {
       // If we were dragging a control structure, finalize containment and persist
       if (this.dragElement?.type === 'controlStructure') {
@@ -321,10 +399,15 @@ export class Canvas2DInteractionHandler {
     }
 
     if (this.isRectangleSelecting && this.rectangleStart) {
-      const point = this.getCanvasPoint(e);
       this.handleRectangleSelection(this.rectangleStart, point);
       this.isRectangleSelecting = false;
       this.rectangleStart = null;
+    }
+
+    // If we weren't dragging, resizing, or dragging edge handle, treat as a click for selection
+    if (!wasDragging && !wasResizing && !wasDraggingEdgeHandle && this.mode === 'select') {
+      const element = this.renderer.getElementAtPoint(point);
+      this.handleSelection(element);
     }
   }
 
@@ -346,15 +429,14 @@ export class Canvas2DInteractionHandler {
   }
 
   private handleAddParticipant(point: Point, type: 'participant' | 'actor'): void {
-    const id = prompt(`Enter ${type} ID:`);
-    if (!id) return;
-
-    const label = prompt(`Enter ${type} label (optional):`);
+    // Generate auto ID based on type
+    const prefix = type === 'actor' ? 'act' : 'part';
+    const id = this.model.generateId(prefix);
 
     const participant = {
       id,
       type,
-      label: label || undefined,
+      label: id, // Use ID as default label
       links: []
     };
 
@@ -362,6 +444,11 @@ export class Canvas2DInteractionHandler {
       x: point.x - 60, // Center on click
       y: point.y - 25
     });
+
+    // Auto-select the newly created participant
+    if (this.onSelectCallback) {
+      this.onSelectCallback({ type: 'participant', data: participant });
+    }
   }
 
   private handleEdgeCreation(point: Point): void {
@@ -378,14 +465,49 @@ export class Canvas2DInteractionHandler {
       const sender = this.edgeCreationStart;
       const receiver = lifeline;
 
-      const text = prompt('Enter message text (optional):');
-
-      this.model.addStatement({
+      const message: Message = {
         sender,
         receiver,
         arrow: this.pendingEdgeType,
-        text: text || undefined
+        text: undefined // Will be edited in PropertyPanel
+      };
+
+      // Check if the click point is inside a control structure
+      const statements = this.model.getStatements();
+      let addedToStructure = false;
+
+      statements.forEach((stmt, index) => {
+        if (!addedToStructure && 'type' in stmt && stmt.type && (stmt as any).bounds) {
+          const bounds = (stmt as any).bounds;
+          const isInside =
+            point.y >= bounds.y + 25 &&
+            point.y <= bounds.y + bounds.height - 10 &&
+            point.x >= bounds.x &&
+            point.x <= bounds.x + bounds.width;
+
+          if (isInside) {
+            // Add message to this structure
+            if ('statements' in stmt) {
+              (stmt as any).statements.push(message);
+            } else if ('branches' in stmt && (stmt as any).branches.length > 0) {
+              (stmt as any).branches[0].statements.push(message);
+            }
+            this.model.updateStatement(index, stmt);
+            addedToStructure = true;
+          }
+        }
       });
+
+      if (!addedToStructure) {
+        // Add to top level
+        this.model.addStatement(message);
+      }
+
+      // Auto-select the newly created message
+      if (this.onSelectCallback) {
+        const index = this.model.getStatements().length - 1;
+        this.onSelectCallback({ type: 'message', data: message, index });
+      }
 
       // Reset
       this.edgeCreationStart = null;
@@ -398,11 +520,13 @@ export class Canvas2DInteractionHandler {
 
     if (!element) {
       this.onSelectCallback(null);
+      this.renderer.setSelectedMessage(null, null);
       return;
     }
 
     switch (element.type) {
       case 'participant':
+        this.renderer.setSelectedMessage(null, null);
         this.onSelectCallback({
           type: 'participant',
           data: element.data
@@ -410,6 +534,7 @@ export class Canvas2DInteractionHandler {
         break;
 
       case 'message':
+        this.renderer.setSelectedMessage(element.data.message, element.data.index);
         this.onSelectCallback({
           type: 'message',
           data: element.data.message,
@@ -418,10 +543,20 @@ export class Canvas2DInteractionHandler {
         break;
 
       case 'note':
+        this.renderer.setSelectedMessage(null, null);
         this.onSelectCallback({
           type: 'note',
+          data: element.data.note,
+          index: element.data.index
+        });
+        break;
+
+      case 'controlStructure':
+        this.renderer.setSelectedMessage(null, null);
+        this.onSelectCallback({
+          type: 'controlStructure',
           data: element.data,
-          index: 0 // TODO: track note index
+          index: element.data.index
         });
         break;
     }
@@ -451,42 +586,14 @@ export class Canvas2DInteractionHandler {
     });
 
     if (selectedStatementIndices.length === 0) {
-      alert('No messages found in selection. Please select an area containing messages.');
+      // No messages found, just return without alert
       this.setMode('select');
       return;
     }
 
-    // Ask what control structure to create
-    const type = prompt('Create control structure (loop/alt/opt/par/critical/break):');
-
-    if (!type) {
-      this.setMode('select');
-      return;
-    }
-
-    // Get selected statements
-    const allStatements = this.model.getStatements();
-    const selectedStatements = selectedStatementIndices
-      .sort((a, b) => a - b)
-      .map(index => allStatements[index]);
-
-    // Create control structure
-    if (type === 'loop') {
-      const label = prompt('Enter loop label:');
-      if (label) {
-        this.createLoopFromSelection(selectedStatementIndices, label, { minX, maxX, minY, maxY });
-      }
-    } else if (type === 'alt') {
-      const condition = prompt('Enter condition:');
-      if (condition) {
-        this.createAltFromSelection(selectedStatementIndices, condition);
-      }
-    } else if (type === 'opt') {
-      const condition = prompt('Enter condition:');
-      if (condition) {
-        this.createOptFromSelection(selectedStatementIndices, condition);
-      }
-    }
+    // Create default loop structure (can be changed in PropertyPanel)
+    const defaultLabel = 'Loop';
+    this.createLoopFromSelection(selectedStatementIndices, defaultLabel, { minX, maxX, minY, maxY });
 
     this.setMode('select');
   }
