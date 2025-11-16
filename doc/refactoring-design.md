@@ -27,6 +27,7 @@
 - 操作モード管理（選択、追加、ドラッグなど）
 - **Utils層の純粋関数を使って判定**
 - **Model層のAPIを呼んで状態更新**
+- 状態変化は `DiagramModel.update(mutator)` で mutable state に対して直接行い、Observer 経由で Renderer の `render.update(state)` を自動実行させる
 
 **変更**:
 - Rendererへの直接的な交差判定呼び出しを削除

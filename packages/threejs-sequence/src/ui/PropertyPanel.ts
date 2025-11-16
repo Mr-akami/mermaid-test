@@ -74,6 +74,9 @@ export class PropertyPanel {
       case 'note':
         this.renderNoteProperties(this.selected.data, this.selected.index);
         break;
+      case 'controlStructure':
+        this.renderControlStructureProperties(this.selected.data, this.selected.index);
+        break;
     }
   }
 
@@ -365,6 +368,346 @@ export class PropertyPanel {
     container.appendChild(labelEl);
     container.appendChild(select);
     return container;
+  }
+
+  private renderControlStructureProperties(structure: any, index: number): void {
+    const title = this.createTitle(`${structure.type.toUpperCase()} Properties`);
+    this.element.appendChild(title);
+
+    // Type-specific fields
+    if (structure.type === 'loop') {
+      // Loop label
+      this.element.appendChild(this.createInput(
+        'Loop Condition',
+        structure.label || '',
+        (value) => {
+          const statements = this.model.getStatements();
+          const stmt = statements[index];
+          if ('type' in stmt && stmt.type === 'loop') {
+            this.model.updateStatement(index, { ...stmt, label: value });
+          }
+        }
+      ));
+    } else if (structure.type === 'alt') {
+      // Alt branches (if/else if/else)
+      this.renderAltBranches(structure, index);
+    } else if (structure.type === 'opt') {
+      // Opt condition
+      this.element.appendChild(this.createInput(
+        'Condition',
+        structure.condition || '',
+        (value) => {
+          const statements = this.model.getStatements();
+          const stmt = statements[index];
+          if ('type' in stmt && stmt.type === 'opt') {
+            this.model.updateStatement(index, { ...stmt, condition: value });
+          }
+        }
+      ));
+    } else if (structure.type === 'par') {
+      // Par branches (parallel execution)
+      this.renderParBranches(structure, index);
+    }
+
+    // Delete button
+    this.element.appendChild(this.createDeleteButton(() => {
+      this.model.removeStatement(index);
+      this.setSelected(null);
+    }));
+  }
+
+  private renderAltBranches(structure: any, index: number): void {
+    if (!structure.branches) return;
+
+    const branchesContainer = document.createElement('div');
+    branchesContainer.style.cssText = 'margin-bottom: 15px;';
+
+    const branchesLabel = document.createElement('label');
+    branchesLabel.textContent = 'Branches';
+    branchesLabel.style.cssText = `
+      display: block;
+      font-size: 12px;
+      font-weight: bold;
+      color: #666;
+      margin-bottom: 10px;
+    `;
+    branchesContainer.appendChild(branchesLabel);
+
+    // Render each branch
+    structure.branches.forEach((branch: any, branchIndex: number) => {
+      const branchDiv = document.createElement('div');
+      branchDiv.style.cssText = `
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 10px;
+        margin-bottom: 10px;
+      `;
+
+      // Branch header
+      const branchHeader = document.createElement('div');
+      branchHeader.style.cssText = `
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      `;
+
+      const branchTitle = document.createElement('span');
+      branchTitle.textContent = branchIndex === 0 ? 'If' : (branchIndex === structure.branches.length - 1 && !branch.condition ? 'Else' : 'Else If');
+      branchTitle.style.cssText = `
+        font-size: 11px;
+        font-weight: bold;
+        color: #999;
+      `;
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = '✕';
+      deleteBtn.style.cssText = `
+        background: none;
+        border: none;
+        color: #f44336;
+        cursor: pointer;
+        font-size: 16px;
+        padding: 0;
+        width: 20px;
+        height: 20px;
+      `;
+      deleteBtn.onclick = () => {
+        const statements = this.model.getStatements();
+        const stmt = statements[index];
+        if ('type' in stmt && stmt.type === 'alt' && (stmt as any).branches) {
+          const updated = { ...stmt };
+          (updated as any).branches = (updated as any).branches.filter((_: any, i: number) => i !== branchIndex);
+          if ((updated as any).branches.length > 0) {
+            this.model.updateStatement(index, updated);
+            this.setSelected({ type: 'controlStructure', data: updated, index });
+          }
+        }
+      };
+
+      branchHeader.appendChild(branchTitle);
+      if (structure.branches.length > 1) {
+        branchHeader.appendChild(deleteBtn);
+      }
+      branchDiv.appendChild(branchHeader);
+
+      // Condition input (not for final else)
+      const isElse = branchIndex === structure.branches.length - 1 && !branch.condition;
+      if (!isElse || branchIndex > 0) {
+        const conditionInput = document.createElement('input');
+        conditionInput.type = 'text';
+        conditionInput.value = branch.condition || '';
+        conditionInput.placeholder = branchIndex === 0 ? 'condition' : 'else if condition';
+        conditionInput.style.cssText = `
+          width: 100%;
+          padding: 6px;
+          border: 1px solid #ddd;
+          border-radius: 3px;
+          font-size: 13px;
+          box-sizing: border-box;
+        `;
+        conditionInput.oninput = () => {
+          const statements = this.model.getStatements();
+          const stmt = statements[index];
+          if ('type' in stmt && stmt.type === 'alt' && (stmt as any).branches) {
+            const updated = { ...stmt };
+            (updated as any).branches[branchIndex].condition = conditionInput.value;
+            this.model.updateStatement(index, updated);
+          }
+        };
+        branchDiv.appendChild(conditionInput);
+      }
+
+      branchesContainer.appendChild(branchDiv);
+    });
+
+    // Add branch button
+    const addBranchBtn = document.createElement('button');
+    addBranchBtn.textContent = '+ Add Else If';
+    addBranchBtn.style.cssText = `
+      width: 100%;
+      padding: 8px;
+      background: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      margin-bottom: 5px;
+    `;
+    addBranchBtn.onclick = () => {
+      const statements = this.model.getStatements();
+      const stmt = statements[index];
+      if ('type' in stmt && stmt.type === 'alt' && (stmt as any).branches) {
+        const updated = { ...stmt };
+        const newBranch = { condition: '', statements: [] };
+        (updated as any).branches.push(newBranch);
+        this.model.updateStatement(index, updated);
+        this.setSelected({ type: 'controlStructure', data: updated, index });
+      }
+    };
+    branchesContainer.appendChild(addBranchBtn);
+
+    // Add else button (without condition)
+    const addElseBtn = document.createElement('button');
+    addElseBtn.textContent = '+ Add Else';
+    addElseBtn.style.cssText = `
+      width: 100%;
+      padding: 8px;
+      background: #2196f3;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    `;
+    addElseBtn.onclick = () => {
+      const statements = this.model.getStatements();
+      const stmt = statements[index];
+      if ('type' in stmt && stmt.type === 'alt' && (stmt as any).branches) {
+        const updated = { ...stmt };
+        const newBranch = { condition: '', statements: [] };
+        (updated as any).branches.push(newBranch);
+        this.model.updateStatement(index, updated);
+        this.setSelected({ type: 'controlStructure', data: updated, index });
+      }
+    };
+    branchesContainer.appendChild(addElseBtn);
+
+    this.element.appendChild(branchesContainer);
+  }
+
+  private renderParBranches(structure: any, index: number): void {
+    if (!structure.branches) return;
+
+    const branchesContainer = document.createElement('div');
+    branchesContainer.style.cssText = 'margin-bottom: 15px;';
+
+    const branchesLabel = document.createElement('label');
+    branchesLabel.textContent = 'Parallel Branches';
+    branchesLabel.style.cssText = `
+      display: block;
+      font-size: 12px;
+      font-weight: bold;
+      color: #666;
+      margin-bottom: 10px;
+    `;
+    branchesContainer.appendChild(branchesLabel);
+
+    // Render each branch
+    structure.branches.forEach((branch: any, branchIndex: number) => {
+      const branchDiv = document.createElement('div');
+      branchDiv.style.cssText = `
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 10px;
+        margin-bottom: 10px;
+      `;
+
+      // Branch header
+      const branchHeader = document.createElement('div');
+      branchHeader.style.cssText = `
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      `;
+
+      const branchTitle = document.createElement('span');
+      branchTitle.textContent = `Branch ${branchIndex + 1}`;
+      branchTitle.style.cssText = `
+        font-size: 11px;
+        font-weight: bold;
+        color: #999;
+      `;
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = '✕';
+      deleteBtn.style.cssText = `
+        background: none;
+        border: none;
+        color: #f44336;
+        cursor: pointer;
+        font-size: 16px;
+        padding: 0;
+        width: 20px;
+        height: 20px;
+      `;
+      deleteBtn.onclick = () => {
+        const statements = this.model.getStatements();
+        const stmt = statements[index];
+        if ('type' in stmt && stmt.type === 'par' && (stmt as any).branches) {
+          const updated = { ...stmt };
+          (updated as any).branches = (updated as any).branches.filter((_: any, i: number) => i !== branchIndex);
+          if ((updated as any).branches.length > 0) {
+            this.model.updateStatement(index, updated);
+            this.setSelected({ type: 'controlStructure', data: updated, index });
+          }
+        }
+      };
+
+      branchHeader.appendChild(branchTitle);
+      if (structure.branches.length > 1) {
+        branchHeader.appendChild(deleteBtn);
+      }
+      branchDiv.appendChild(branchHeader);
+
+      // Label input
+      const labelInput = document.createElement('input');
+      labelInput.type = 'text';
+      labelInput.value = branch.label || '';
+      labelInput.placeholder = `Branch ${branchIndex + 1} label`;
+      labelInput.style.cssText = `
+        width: 100%;
+        padding: 6px;
+        border: 1px solid #ddd;
+        border-radius: 3px;
+        font-size: 13px;
+        box-sizing: border-box;
+      `;
+      labelInput.oninput = () => {
+        const statements = this.model.getStatements();
+        const stmt = statements[index];
+        if ('type' in stmt && stmt.type === 'par' && (stmt as any).branches) {
+          const updated = { ...stmt };
+          (updated as any).branches[branchIndex].label = labelInput.value;
+          this.model.updateStatement(index, updated);
+        }
+      };
+      branchDiv.appendChild(labelInput);
+
+      branchesContainer.appendChild(branchDiv);
+    });
+
+    // Add branch button
+    const addBranchBtn = document.createElement('button');
+    addBranchBtn.textContent = '+ Add Parallel Branch';
+    addBranchBtn.style.cssText = `
+      width: 100%;
+      padding: 8px;
+      background: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    `;
+    addBranchBtn.onclick = () => {
+      const statements = this.model.getStatements();
+      const stmt = statements[index];
+      if ('type' in stmt && stmt.type === 'par' && (stmt as any).branches) {
+        const updated = { ...stmt };
+        const newBranch = { label: '', statements: [] };
+        (updated as any).branches.push(newBranch);
+        this.model.updateStatement(index, updated);
+        this.setSelected({ type: 'controlStructure', data: updated, index });
+      }
+    };
+    branchesContainer.appendChild(addBranchBtn);
+
+    this.element.appendChild(branchesContainer);
   }
 
   private createDeleteButton(onClick: () => void): HTMLElement {

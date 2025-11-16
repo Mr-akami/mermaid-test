@@ -94,6 +94,8 @@ class SequenceEditorApp {
       onAddNote: () => this.addNote(),
       onAddLoop: () => this.addLoop(),
       onAddAlt: () => this.addAlt(),
+      onAddOpt: () => this.addOpt(),
+      onAddPar: () => this.addPar(),
       onSelect: () => this.interactionHandler.setMode('select'),
       onRectangleSelect: () => this.interactionHandler.setMode('rectangle-select'),
       onToggleAutoNumber: () => this.toggleAutoNumber(),
@@ -169,6 +171,32 @@ class SequenceEditorApp {
       branches: [
         {
           condition: 'Condition',
+          statements: []
+        }
+      ]
+    });
+  }
+
+  private addOpt(): void {
+    // Create opt with default condition (will be edited in PropertyPanel)
+    this.model.addStatement({
+      type: 'opt',
+      condition: 'Condition',
+      statements: []
+    });
+  }
+
+  private addPar(): void {
+    // Create par with default branches (will be edited in PropertyPanel)
+    this.model.addStatement({
+      type: 'par',
+      branches: [
+        {
+          label: 'Branch 1',
+          statements: []
+        },
+        {
+          label: 'Branch 2',
           statements: []
         }
       ]

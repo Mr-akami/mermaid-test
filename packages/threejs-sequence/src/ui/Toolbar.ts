@@ -7,6 +7,8 @@ export interface ToolbarOptions {
   onAddNote: () => void;
   onAddLoop: () => void;
   onAddAlt: () => void;
+  onAddOpt: () => void;
+  onAddPar: () => void;
   onToggleAutoNumber: () => void;
   onExport: () => void;
 }
@@ -65,7 +67,9 @@ export class Toolbar {
     // Control structures
     this.addSection(toolbar, 'Structures', [
       this.createButton('Loop', () => this.options.onAddLoop()),
-      this.createButton('Alt', () => this.options.onAddAlt())
+      this.createButton('Alt', () => this.options.onAddAlt()),
+      this.createButton('Opt', () => this.options.onAddOpt()),
+      this.createButton('Par', () => this.options.onAddPar())
     ]);
 
     // Options

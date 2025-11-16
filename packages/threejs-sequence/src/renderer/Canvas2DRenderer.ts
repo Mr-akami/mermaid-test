@@ -242,6 +242,14 @@ export class Canvas2DRenderer implements DiagramObserver {
     if (statement && 'type' in statement && statement.type) {
       const oldBounds = (statement as any).bounds;
 
+      console.log('[Renderer] updateControlStructureBounds:', {
+        statementIndex,
+        oldBounds,
+        newBounds: bounds,
+        shouldUpdateContainment,
+        shouldPersist
+      });
+
       // Update bounds
       (statement as any).bounds = bounds;
 
@@ -250,9 +258,12 @@ export class Canvas2DRenderer implements DiagramObserver {
       const isResizing = oldBounds &&
         (oldBounds.width !== bounds.width || oldBounds.height !== bounds.height);
 
+      console.log('[Renderer] isResizing:', isResizing);
+
       if (isResizing) {
         // Clear all message position overrides for messages inside this structure
         // This ensures messages use their relative positions within the structure
+        console.log('[Renderer] Clearing message positions for resize');
         this.clearStructureMessagePositions(statement);
       }
 
@@ -921,9 +932,19 @@ export class Canvas2DRenderer implements DiagramObserver {
       const messageKey = MessagePositionUtils.generateMessageKey(message);
       const draggedOffset = this.messagePositions.get(messageKey as any);
 
+      console.log('[Renderer] Drawing message in structure:', {
+        messageText: message.text,
+        messageKey,
+        draggedOffset,
+        structureBounds,
+        currentStructureBounds,
+        parentStructureBounds: parentStructure.bounds
+      });
+
       if (draggedOffset !== undefined) {
         // Use stored offset relative to structure bounds
         y = CoordinateUtils.toAbsoluteY(draggedOffset, structureBounds);
+        console.log('[Renderer] Using draggedOffset:', draggedOffset, '-> Y:', y);
       } else {
         // Use default position relative to structure
         const messagesInStructure = parentStructure.statements ||
@@ -938,6 +959,7 @@ export class Canvas2DRenderer implements DiagramObserver {
           40,
           this.MESSAGE_SPACING
         );
+        console.log('[Renderer] Using default position - index:', messageIndexInStructure, '-> Y:', y);
       }
     } else {
       // Message is at top level
@@ -1066,6 +1088,63 @@ export class Canvas2DRenderer implements DiagramObserver {
     });
   }
 
+  /**
+   * Draw branch dividers for alt/par structures
+   */
+  private drawBranchDividers(structure: any, x: number, y: number, width: number, height: number, labelHeight: number): void {
+    if (!structure.branches || structure.branches.length <= 1) return;
+
+    const branchCount = structure.branches.length;
+    const branchHeight = (height - labelHeight) / branchCount;
+
+    this.ctx.save();
+    this.ctx.strokeStyle = '#9e9e9e';
+    this.ctx.lineWidth = 1;
+    this.ctx.setLineDash([5, 3]);
+
+    // Draw divider lines between branches
+    for (let i = 1; i < branchCount; i++) {
+      const dividerY = y + labelHeight + i * branchHeight;
+      this.ctx.beginPath();
+      this.ctx.moveTo(x, dividerY);
+      this.ctx.lineTo(x + width, dividerY);
+      this.ctx.stroke();
+    }
+
+    // Draw branch labels
+    this.ctx.setLineDash([]);
+    this.ctx.fillStyle = '#f5f5f5';
+    this.ctx.font = '11px Arial';
+    this.ctx.textAlign = 'left';
+    this.ctx.textBaseline = 'top';
+
+    structure.branches.forEach((branch: any, i: number) => {
+      const branchY = y + labelHeight + i * branchHeight;
+      let branchLabel = '';
+
+      if (structure.type === 'alt') {
+        if (i === 0) {
+          branchLabel = `[${branch.condition || 'if'}]`;
+        } else {
+          branchLabel = `[${branch.condition || 'else'}]`;
+        }
+      } else if (structure.type === 'par') {
+        branchLabel = `[${branch.label || `branch ${i + 1}`}]`;
+      }
+
+      // Draw label background
+      const labelWidth = this.ctx.measureText(branchLabel).width + 10;
+      this.ctx.fillStyle = '#f5f5f5';
+      this.ctx.fillRect(x + 5, branchY + 3, labelWidth, 16);
+
+      // Draw label text
+      this.ctx.fillStyle = '#666666';
+      this.ctx.fillText(branchLabel, x + 10, branchY + 5);
+    });
+
+    this.ctx.restore();
+  }
+
   private drawControlStructure(structure: any, index: number, _messageOffset: number): void {
     // Use bounds from structure if available
     let x: number, y: number, width: number, height: number;
@@ -1153,6 +1232,11 @@ export class Canvas2DRenderer implements DiagramObserver {
     }
 
     this.ctx.fillText(labelText, x + 5, y + labelHeight / 2, 90);
+
+    // Draw branch dividers for alt/par structures
+    if (structure.type === 'alt' || structure.type === 'par') {
+      this.drawBranchDividers(structure, x, y, width, height, labelHeight);
+    }
 
     // Draw resize handles at corners
     const handleSize = 8;

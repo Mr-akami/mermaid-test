@@ -7,6 +7,8 @@ export interface ToolbarCallbacks {
   onAddNote: () => void;
   onAddLoop: () => void;
   onAddAlt: () => void;
+  onAddOpt: () => void;
+  onAddPar: () => void;
   onSelect: () => void;
   onRectangleSelect: () => void;
   onToggleAutoNumber: () => void;
@@ -100,7 +102,15 @@ export class IconToolbar {
 
     toolbar.appendChild(this.createIconButton('Alt', '🔀', () => {
       this.callbacks.onAddAlt();
-    }, 'Add alternative structure'));
+    }, 'Add alternative (if-else) structure'));
+
+    toolbar.appendChild(this.createIconButton('Opt', '❓', () => {
+      this.callbacks.onAddOpt();
+    }, 'Add optional structure'));
+
+    toolbar.appendChild(this.createIconButton('Par', '⫴', () => {
+      this.callbacks.onAddPar();
+    }, 'Add parallel structure'));
 
     // Right side
     const spacer = document.createElement('div');

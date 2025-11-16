@@ -314,6 +314,7 @@ export class Canvas2DInteractionHandler {
           width: this.dragElement.bounds.width,
           height: this.dragElement.bounds.height
         };
+
         // Update dragElement bounds so it's available at mouse up
         this.dragElement.bounds = newBounds;
         // Don't persist to model during drag to avoid frequent updates
@@ -536,12 +537,19 @@ export class Canvas2DInteractionHandler {
             point.x <= bounds.x + bounds.width;
 
           if (isInside) {
+            // Store the message position relative to structure
+            const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
+            const relativeOffset = point.y - bounds.y;
+            const messagePositions = this.renderer.getMessagePositions();
+            messagePositions.set(messageKey as any, relativeOffset);
+
             // Add message to this structure
             if ('statements' in stmt) {
               (stmt as any).statements.push(message);
             } else if ('branches' in stmt && (stmt as any).branches.length > 0) {
               (stmt as any).branches[0].statements.push(message);
             }
+
             this.model.updateStatement(index, stmt);
             addedToStructure = true;
           }
@@ -549,7 +557,13 @@ export class Canvas2DInteractionHandler {
       });
 
       if (!addedToStructure) {
-        // Add to top level
+        // Add to top level and store position
+        const messagePositions = this.renderer.getMessagePositions();
+
+        // Store the absolute Y position for top-level messages
+        const statementIndex = this.model.getStatements().length;
+        messagePositions.set(statementIndex, point.y);
+
         this.model.addStatement(message);
       }
 
@@ -605,7 +619,7 @@ export class Canvas2DInteractionHandler {
         this.renderer.setSelectedMessage(null, null);
         this.onSelectCallback({
           type: 'controlStructure',
-          data: element.data,
+          data: element.data.structure,
           index: element.data.index
         });
         break;
@@ -673,6 +687,25 @@ export class Canvas2DInteractionHandler {
       width: bounds.maxX - bounds.minX + padding * 2,
       height: bounds.maxY - bounds.minY + padding * 2
     };
+
+    // Store current message positions as relative offsets from the loop bounds
+    const messagePositions = this.renderer.getMessagePositions();
+    selectedStatements.forEach((stmt, index) => {
+      if ('sender' in stmt && 'receiver' in stmt) {
+        const message = stmt;
+        const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
+
+        // Get the current absolute Y position of this message
+        const statementIndex = statementIndices[index];
+        const currentY = messagePositions.get(statementIndex);
+
+        if (currentY !== undefined) {
+          // Convert absolute Y to relative offset from loop top
+          const relativeOffset = currentY - loopBounds.y;
+          messagePositions.set(messageKey as any, relativeOffset);
+        }
+      }
+    });
 
     // Create loop structure
     const loop = {
