@@ -190,6 +190,7 @@ The editor should preserve these settings per diagram and apply them to Mermaid 
 * Edgeはparticipantやactorなどから下に伸びる線をクリックし、次にクリックした伸びる線に矢印をつけて設置する
 * Edgeはドラッグで上下に動かすことができる
 * EdgeはStart, end部分の順番を覚えており、他Edgeとの位置を把握できる
+* 基本的にマウスのインタラクションで操作できること。
 * 一度設定されたparticipant, actor, edgeのプロパティは、プロパティウインドウから変更できる
 * altやopt等はマウスで選択した部分を囲むように作成することができ、その範囲内のEdgeやparticipant, actorを把握することができる
 * altやopt等はサイズを変更することができ、変更後の範囲内のオブジェクトを再度把握することができる
