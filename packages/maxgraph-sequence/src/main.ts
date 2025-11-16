@@ -725,6 +725,7 @@ participantForm.addEventListener('submit', (event) => {
   idInput.value = '';
   labelInput.value = '';
   explicitInput.checked = true;
+  setSelectedEntity({ kind: 'participant', id });
   rerender();
 });
 
@@ -769,8 +770,9 @@ messageForm.addEventListener('submit', (event) => {
   if (deactivateReceiver.checked) activation.receiver = 'deactivate';
   const defaultY = clampMessageY(defaultMessageY(diagramState.messages.length));
 
+  const messageId = createId('msg');
   diagramState.messages.push({
-    id: createId('msg'),
+    id: messageId,
     from: fromSelect.value,
     to: toSelect.value,
     arrow: arrowSelect.value as ArrowType,
@@ -787,6 +789,7 @@ messageForm.addEventListener('submit', (event) => {
   deactivateReceiver.checked = false;
   noteIndexInput.value = `${diagramState.messages.length - 1}`;
   blockToInput.value = `${diagramState.messages.length - 1}`;
+  setSelectedEntity({ kind: 'message', id: messageId });
   rerender();
 });
 
@@ -815,8 +818,9 @@ noteForm.addEventListener('submit', (event) => {
     diagramState.messages.length,
   );
 
+  const noteId = createId('note');
   diagramState.notes.push({
-    id: createId('note'),
+    id: noteId,
     targets,
     position: positionSelect.value as NotePosition,
     text: textArea.value.trim(),
@@ -824,6 +828,7 @@ noteForm.addEventListener('submit', (event) => {
   });
 
   textArea.value = '';
+  setSelectedEntity({ kind: 'note', id: noteId });
   rerender();
 });
 
@@ -930,6 +935,8 @@ function rerender(): void {
   renderGraph(graph, diagramState, graphContainer);
   updateMermaidOutput();
   updateNumericBounds();
+  validateSelection();
+  renderPropertyPanel();
 }
 
 function updateNumericBounds(): void {
@@ -1649,6 +1656,7 @@ function handleCellsMoved(event: any): void {
 function handleGraphClick(event: any): void {
   const mouseEvent = event?.getProperty?.('event') as InternalMouseEvent | undefined;
   const cell = event?.getProperty?.('cell') as Cell | null;
+  const meta = cell ? cellMetadata.get(cell) : null;
   if (!mouseEvent) return;
 
   if (activeTool === 'participant' || activeTool === 'actor') {
@@ -1664,19 +1672,19 @@ function handleGraphClick(event: any): void {
   }
 
   if (activeTool === 'message') {
-    const meta = cell ? cellMetadata.get(cell) : null;
     if (meta?.kind === 'participant' && meta.participantId) {
       if (!pendingConnection) {
         pendingConnection = { participantId: meta.participantId };
         updateToolHint(`Select target for message from ${meta.participantId}`);
       } else {
-        addMessageFromInteraction(
+        const messageId = addMessageFromInteraction(
           pendingConnection.participantId,
           meta.participantId,
           clampMessageY(mouseEvent.getGraphY()),
         );
         pendingConnection = null;
         updateToolHint();
+        setSelectedEntity({ kind: 'message', id: messageId });
       }
       rerender();
     } else {
@@ -1688,6 +1696,7 @@ function handleGraphClick(event: any): void {
 
   pendingConnection = null;
   updateToolHint();
+  selectFromMetadata(meta);
 }
 
 function clampMessageIndexes(): void {
@@ -1819,6 +1828,7 @@ function addParticipantAt(type: ParticipantType, x: number): void {
     x: clampParticipantX(x),
   });
   pendingConnection = null;
+  setSelectedEntity({ kind: 'participant', id });
   rerender();
 }
 
@@ -1826,11 +1836,12 @@ function addMessageFromInteraction(
   fromId: string,
   toId: string,
   y: number,
-): void {
+): string {
   const arrow =
     (messageArrowSelect?.value as ArrowType | undefined) ?? ('->>' as ArrowType);
+  const messageId = createId('msg');
   diagramState.messages.push({
-    id: createId('msg'),
+    id: messageId,
     from: fromId,
     to: toId,
     arrow,
@@ -1840,6 +1851,7 @@ function addMessageFromInteraction(
   noteIndexInput.value = `${diagramState.messages.length - 1}`;
   blockToInput.value = `${diagramState.messages.length - 1}`;
   clampMessageIndexes();
+  return messageId;
 }
 
 function getNextParticipantX(): number {
@@ -1923,6 +1935,309 @@ function suggestParticipantId(type: ParticipantType): string {
     counter += 1;
   }
   return `${base}${counter}`;
+}
+
+function setSelectedEntity(entity: SelectionDescriptor | null): void {
+  selectedEntity = entity;
+  renderPropertyPanel();
+}
+
+function selectFromMetadata(meta?: CellMetadata): void {
+  if (!meta) {
+    setSelectedEntity(null);
+    return;
+  }
+  if (meta.kind === 'participant') {
+    setSelectedEntity({ kind: 'participant', id: meta.participantId });
+  } else if (meta.kind === 'message-anchor' || meta.kind === 'message') {
+    setSelectedEntity({ kind: 'message', id: meta.messageId });
+  } else if (meta.kind === 'note') {
+    setSelectedEntity({ kind: 'note', id: meta.noteId });
+  } else {
+    setSelectedEntity(null);
+  }
+}
+
+function validateSelection(): void {
+  if (!selectedEntity) return;
+  const exists =
+    (selectedEntity.kind === 'participant' &&
+      diagramState.participants.some((p) => p.id === selectedEntity.id)) ||
+    (selectedEntity.kind === 'message' &&
+      diagramState.messages.some((m) => m.id === selectedEntity.id)) ||
+    (selectedEntity.kind === 'note' &&
+      diagramState.notes.some((note) => note.id === selectedEntity.id));
+  if (!exists) {
+    selectedEntity = null;
+  }
+}
+
+function renderPropertyPanel(): void {
+  if (!propertyBody || !propertyEntityLabel) return;
+  if (!selectedEntity) {
+    propertyEntityLabel.textContent = 'Nothing selected';
+    propertyBody.innerHTML =
+      '<p class="placeholder">Select a lifeline, message, or note on the canvas.</p>';
+    return;
+  }
+
+  if (selectedEntity.kind === 'participant') {
+    const participant = diagramState.participants.find(
+      (p) => p.id === selectedEntity.id,
+    );
+    if (!participant) {
+      propertyEntityLabel.textContent = 'Nothing selected';
+      propertyBody.innerHTML =
+        '<p class="placeholder">Select a lifeline, message, or note on the canvas.</p>';
+      return;
+    }
+    propertyEntityLabel.textContent = `Participant · ${participant.id}`;
+    propertyBody.innerHTML = `
+      <form>
+        <label>
+          Display label
+          <input id="prop-participant-label" />
+        </label>
+        <div class="inline-fields">
+          <label>
+            Type
+            <select id="prop-participant-type">
+              <option value="participant" ${
+                participant.type === 'participant' ? 'selected' : ''
+              }>participant</option>
+              <option value="actor" ${
+                participant.type === 'actor' ? 'selected' : ''
+              }>actor</option>
+            </select>
+          </label>
+          <label>
+            Accent color
+            <input type="color" id="prop-participant-color" value="${
+              participant.color || '#ECEFF1'
+            }" />
+          </label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="prop-participant-explicit" ${
+            participant.explicit ? 'checked' : ''
+          } />
+          Explicit definition
+        </label>
+      </form>
+    `;
+    const labelInput = propertyBody.querySelector<HTMLInputElement>(
+      '#prop-participant-label',
+    );
+    const typeSelect = propertyBody.querySelector<HTMLSelectElement>(
+      '#prop-participant-type',
+    );
+    const colorInput = propertyBody.querySelector<HTMLInputElement>(
+      '#prop-participant-color',
+    );
+    const explicitInput = propertyBody.querySelector<HTMLInputElement>(
+      '#prop-participant-explicit',
+    );
+
+    if (labelInput) {
+      labelInput.value = participant.displayName || participant.id;
+    }
+    if (colorInput && participant.color) {
+      colorInput.value = participant.color;
+    }
+    if (explicitInput) {
+      explicitInput.checked = participant.explicit;
+    }
+
+    labelInput?.addEventListener('input', () => {
+      participant.displayName = labelInput.value.trim() || participant.id;
+      rerender();
+    });
+    typeSelect?.addEventListener('change', () => {
+      participant.type = (typeSelect.value as ParticipantType) ?? 'participant';
+      rerender();
+    });
+    colorInput?.addEventListener('input', () => {
+      participant.color = colorInput.value;
+      rerender();
+    });
+    explicitInput?.addEventListener('change', () => {
+      participant.explicit = explicitInput.checked;
+      rerender();
+    });
+    return;
+  }
+
+  if (selectedEntity.kind === 'message') {
+    const message = diagramState.messages.find(
+      (m) => m.id === selectedEntity.id,
+    );
+    if (!message) {
+      propertyEntityLabel.textContent = 'Nothing selected';
+      propertyBody.innerHTML =
+        '<p class="placeholder">Select a lifeline, message, or note on the canvas.</p>';
+      return;
+    }
+    propertyEntityLabel.textContent = `Message · ${message.id}`;
+    propertyBody.innerHTML = `
+      <form>
+        <label>
+          From
+          <select id="prop-message-from">
+            ${buildParticipantOptions(message.from)}
+          </select>
+        </label>
+        <label>
+          To
+          <select id="prop-message-to">
+            ${buildParticipantOptions(message.to)}
+          </select>
+        </label>
+        <label>
+          Arrow style
+          <select id="prop-message-arrow">
+            ${ARROW_TYPES.map(
+              (arrow) =>
+                `<option value="${arrow}" ${
+                  arrow === message.arrow ? 'selected' : ''
+                }>${arrow}</option>`,
+            ).join('')}
+          </select>
+        </label>
+        <label>
+          Message text
+          <textarea id="prop-message-text" rows="3"></textarea>
+        </label>
+      </form>
+    `;
+    const fromSelect = propertyBody.querySelector<HTMLSelectElement>(
+      '#prop-message-from',
+    );
+    const toSelect = propertyBody.querySelector<HTMLSelectElement>(
+      '#prop-message-to',
+    );
+    const arrowSelect = propertyBody.querySelector<HTMLSelectElement>(
+      '#prop-message-arrow',
+    );
+    const textArea = propertyBody.querySelector<HTMLTextAreaElement>(
+      '#prop-message-text',
+    );
+
+    if (textArea) {
+      textArea.value = message.text || '';
+    }
+
+    fromSelect?.addEventListener('change', () => {
+      message.from = fromSelect.value;
+      rerender();
+    });
+    toSelect?.addEventListener('change', () => {
+      message.to = toSelect.value;
+      rerender();
+    });
+    arrowSelect?.addEventListener('change', () => {
+      message.arrow = arrowSelect.value as ArrowType;
+      rerender();
+    });
+    textArea?.addEventListener('input', () => {
+      message.text = textArea.value;
+      rerender();
+    });
+    return;
+  }
+
+  if (selectedEntity.kind === 'note') {
+    const note = diagramState.notes.find((n) => n.id === selectedEntity.id);
+    if (!note) {
+      propertyEntityLabel.textContent = 'Nothing selected';
+      propertyBody.innerHTML =
+        '<p class="placeholder">Select a lifeline, message, or note on the canvas.</p>';
+      return;
+    }
+    propertyEntityLabel.textContent = `Note · ${note.id}`;
+    propertyBody.innerHTML = `
+      <form>
+        <label>
+          Position
+          <select id="prop-note-position">
+            <option value="left" ${note.position === 'left' ? 'selected' : ''}>left of</option>
+            <option value="right" ${note.position === 'right' ? 'selected' : ''}>right of</option>
+            <option value="over" ${note.position === 'over' ? 'selected' : ''}>over</option>
+          </select>
+        </label>
+        <label>
+          Targets (comma separated)
+          <input id="prop-note-targets" />
+        </label>
+        <label>
+          Message index
+          <input id="prop-note-index" type="number" min="0" max="${
+            Math.max(diagramState.messages.length - 1, 0)
+          }" value="${note.messageIndex}" />
+        </label>
+        <label>
+          Text
+          <textarea id="prop-note-text" rows="3"></textarea>
+        </label>
+      </form>
+    `;
+    const positionSelect = propertyBody.querySelector<HTMLSelectElement>(
+      '#prop-note-position',
+    );
+    const targetsInput = propertyBody.querySelector<HTMLInputElement>(
+      '#prop-note-targets',
+    );
+    const indexInput = propertyBody.querySelector<HTMLInputElement>(
+      '#prop-note-index',
+    );
+    const textArea = propertyBody.querySelector<HTMLTextAreaElement>(
+      '#prop-note-text',
+    );
+
+    if (targetsInput) {
+      targetsInput.value = note.targets.join(', ');
+    }
+    if (indexInput) {
+      indexInput.value = `${note.messageIndex}`;
+    }
+    if (textArea) {
+      textArea.value = note.text;
+    }
+
+    positionSelect?.addEventListener('change', () => {
+      note.position = positionSelect.value as NotePosition;
+      rerender();
+    });
+    targetsInput?.addEventListener('input', () => {
+      note.targets = targetsInput.value
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      rerender();
+    });
+    indexInput?.addEventListener('input', () => {
+      const value = Number(indexInput.value);
+      note.messageIndex = clampIndex(value, diagramState.messages.length);
+      rerender();
+    });
+    textArea?.addEventListener('input', () => {
+      note.text = textArea.value;
+      rerender();
+    });
+    return;
+  }
+}
+
+function buildParticipantOptions(selectedId?: string): string {
+  if (!diagramState.participants.length) {
+    return '<option value="" disabled>No participants</option>';
+  }
+  return diagramState.participants
+    .map((participant) => {
+      const display = participant.displayName || participant.id;
+      const selected = participant.id === selectedId ? 'selected' : '';
+      return `<option value="${participant.id}" ${selected}>${display}</option>`;
+    })
+    .join('');
 }
 
 rerender();
