@@ -242,14 +242,6 @@ export class Canvas2DRenderer implements DiagramObserver {
     if (statement && 'type' in statement && statement.type) {
       const oldBounds = (statement as any).bounds;
 
-      console.log('[Renderer] updateControlStructureBounds:', {
-        statementIndex,
-        oldBounds,
-        newBounds: bounds,
-        shouldUpdateContainment,
-        shouldPersist
-      });
-
       // Update bounds
       (statement as any).bounds = bounds;
 
@@ -258,12 +250,9 @@ export class Canvas2DRenderer implements DiagramObserver {
       const isResizing = oldBounds &&
         (oldBounds.width !== bounds.width || oldBounds.height !== bounds.height);
 
-      console.log('[Renderer] isResizing:', isResizing);
-
       if (isResizing) {
         // Clear all message position overrides for messages inside this structure
         // This ensures messages use their relative positions within the structure
-        console.log('[Renderer] Clearing message positions for resize');
         this.clearStructureMessagePositions(statement);
       }
 
@@ -932,19 +921,9 @@ export class Canvas2DRenderer implements DiagramObserver {
       const messageKey = MessagePositionUtils.generateMessageKey(message);
       const draggedOffset = this.messagePositions.get(messageKey as any);
 
-      console.log('[Renderer] Drawing message in structure:', {
-        messageText: message.text,
-        messageKey,
-        draggedOffset,
-        structureBounds,
-        currentStructureBounds,
-        parentStructureBounds: parentStructure.bounds
-      });
-
       if (draggedOffset !== undefined) {
         // Use stored offset relative to structure bounds
         y = CoordinateUtils.toAbsoluteY(draggedOffset, structureBounds);
-        console.log('[Renderer] Using draggedOffset:', draggedOffset, '-> Y:', y);
       } else {
         // Use default position relative to structure
         const messagesInStructure = parentStructure.statements ||
@@ -959,7 +938,6 @@ export class Canvas2DRenderer implements DiagramObserver {
           40,
           this.MESSAGE_SPACING
         );
-        console.log('[Renderer] Using default position - index:', messageIndexInStructure, '-> Y:', y);
       }
     } else {
       // Message is at top level
