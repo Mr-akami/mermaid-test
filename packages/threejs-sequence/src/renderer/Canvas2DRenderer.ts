@@ -1,5 +1,10 @@
 import { DiagramModel } from '../model/DiagramModel';
 import type { Participant, Message, Note } from '../model/types';
+import type { DiagramObserver } from '../model/DiagramObserver';
+import { CoordinateUtils } from '../utils/CoordinateUtils';
+import { GeometryUtils } from '../utils/GeometryUtils';
+import { MessagePositionUtils } from '../utils/MessagePositionUtils';
+import { StructureUtils } from '../utils/StructureUtils';
 
 export interface Point {
   x: number;
@@ -10,13 +15,14 @@ export interface DraggableElement {
   type: 'participant' | 'message' | 'note' | 'controlStructure';
   id: string;
   bounds: { x: number; y: number; width: number; height: number };
-  data: any;
+  data?: any;
 }
 
 /**
  * Canvas2DRenderer renders sequence diagrams using Canvas 2D API
+ * Implements DiagramObserver to be notified of model changes
  */
-export class Canvas2DRenderer {
+export class Canvas2DRenderer implements DiagramObserver {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private model: DiagramModel;
@@ -41,6 +47,9 @@ export class Canvas2DRenderer {
   // Draggable elements for hit testing
   private elements: DraggableElement[] = [];
 
+  // Control structure bounds cache (for efficient lookup during message positioning)
+  private controlStructureBounds: Map<number, { x: number; y: number; width: number; height: number }> = new Map();
+
   // Selected message for edge reconnection
   private selectedMessage: { message: Message; index: number; y: number } | null = null;
 
@@ -53,11 +62,19 @@ export class Canvas2DRenderer {
     this.resizeCanvas();
     window.addEventListener('resize', () => this.resizeCanvas());
 
-    // Listen to model changes
-    this.model.onChange(() => this.render());
+    // Register as observer to model
+    this.model.addObserver(this);
 
     // Initialize participant positions
     this.initializePositions();
+  }
+
+  /**
+   * DiagramObserver implementation
+   * Called when the diagram model changes
+   */
+  onDiagramChanged(): void {
+    this.render();
   }
 
   private resizeCanvas(): void {
@@ -116,43 +133,98 @@ export class Canvas2DRenderer {
    * Add a new participant at specified position
    */
   addParticipantAtPosition(participant: Participant, position: Point): void {
-    this.model.addParticipant(participant);
     this.participantPositions.set(participant.id, position);
-    this.render();
+    this.model.addParticipant(participant);
+    // render() will be called automatically by Observer pattern
   }
 
   /**
    * Update participant position (for dragging)
+   * Only updates visual position, not model
    */
   updateParticipantPosition(participantId: string, position: Point): void {
     this.participantPositions.set(participantId, position);
-    this.render();
+    this.render(); // Explicit render needed - no model change
   }
 
   /**
    * Update note position (for dragging)
+   * Only updates visual position, not model
    */
   updateNotePosition(index: number, position: Point): void {
     this.notePositions.set(index, position);
-    this.render();
+    this.render(); // Explicit render needed - no model change
   }
 
   /**
    * Update message position (for vertical dragging)
+   * Only updates visual position, not model
    */
   updateMessagePosition(messageIndex: number, y: number): void {
     this.messagePositions.set(messageIndex, y);
-    this.render();
+    this.render(); // Explicit render needed - no model change
   }
 
   /**
    * Update message position by message object (for messages inside structures)
+   * Only updates visual position, not model
    */
-  updateMessagePositionByObject(message: any, y: number): void {
+  updateMessagePositionByObject(message: any, y: number, parentStructure?: any): void {
     // Store position using a unique key based on message properties
-    const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
-    this.messagePositions.set(messageKey as any, y);
-    this.render();
+    const messageKey = MessagePositionUtils.generateMessageKey(message);
+
+    if (parentStructure) {
+      // Find the current bounds of the parent structure
+      const currentStructureBounds = this.findCurrentStructureBounds(parentStructure);
+
+      if (currentStructureBounds) {
+        // Store as relative offset from structure top
+        const relativeOffset = CoordinateUtils.toRelativeOffset(y, currentStructureBounds);
+        this.messagePositions.set(messageKey as any, relativeOffset);
+      } else {
+        // Fallback to old behavior if we can't find current bounds
+        if (parentStructure.bounds) {
+          const relativeOffset = CoordinateUtils.toRelativeOffset(y, parentStructure.bounds);
+          this.messagePositions.set(messageKey as any, relativeOffset);
+        } else {
+          this.messagePositions.set(messageKey as any, y);
+        }
+      }
+    } else {
+      // Store as absolute position (for top-level messages)
+      this.messagePositions.set(messageKey as any, y);
+    }
+    this.render(); // Explicit render needed - no model change
+  }
+
+  /**
+   * Find the current bounds of a structure by looking it up in controlStructureBounds
+   */
+  private findCurrentStructureBounds(structure: any): { x: number; y: number; width: number; height: number } | null {
+    // If structure has _topLevelStatementIndex, use it directly
+    if (structure && typeof structure._topLevelStatementIndex === 'number') {
+      const bounds = this.controlStructureBounds.get(structure._topLevelStatementIndex);
+      if (bounds) {
+        return bounds;
+      }
+    }
+
+    // Fallback: Try to find the structure in controlStructureBounds by matching
+    const statements = this.model.getStatements();
+
+    for (let i = 0; i < statements.length; i++) {
+      const stmt = statements[i];
+
+      // Check if this statement matches the structure we're looking for
+      if (StructureUtils.structuresEqual(stmt, structure)) {
+        const bounds = this.controlStructureBounds.get(i);
+        if (bounds) {
+          return bounds;
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -168,17 +240,20 @@ export class Canvas2DRenderer {
     const statement = statements[statementIndex];
 
     if (statement && 'type' in statement && statement.type) {
+      const oldBounds = (statement as any).bounds;
+
       // Update bounds
       (statement as any).bounds = bounds;
 
-      // Clear all message position overrides for messages inside this structure
-      // This ensures messages use their relative positions within the structure
-      this.clearStructureMessagePositions(statement);
+      // Only clear message positions if the structure is being resized (width/height changed)
+      // Don't clear when just moving (x/y changed but width/height same)
+      const isResizing = oldBounds &&
+        (oldBounds.width !== bounds.width || oldBounds.height !== bounds.height);
 
-      // Update the statement in the model to persist the bounds change
-      // Only persist when drag/resize is complete to avoid frequent CodeEditor updates
-      if (shouldPersist) {
-        this.model.updateStatement(statementIndex, statement);
+      if (isResizing) {
+        // Clear all message position overrides for messages inside this structure
+        // This ensures messages use their relative positions within the structure
+        this.clearStructureMessagePositions(statement);
       }
 
       // Update containment if requested (for resize)
@@ -186,7 +261,16 @@ export class Canvas2DRenderer {
         this.updateStructureContainment(statementIndex);
       }
 
-      this.render();
+      // Update the statement in the model to persist the bounds change
+      // Only persist when drag/resize is complete to avoid frequent CodeEditor updates
+      // This should be done AFTER containment update
+      if (shouldPersist) {
+        this.model.updateStatement(statementIndex, statement);
+        // render() will be called automatically by Observer pattern
+      } else {
+        // If not persisting to model, need explicit render
+        this.render();
+      }
     }
   }
 
@@ -235,10 +319,19 @@ export class Canvas2DRenderer {
     // Find all top-level messages that should be in this structure
     statements.forEach((stmt, index) => {
       if (index === structureIndex) return; // Skip self
+      // Skip structures (only process messages)
+      if ('type' in stmt && stmt.type) return;
 
       if ('sender' in stmt && 'receiver' in stmt) {
         const message = stmt as any;
-        const messageY = this.messagePositions.get(index);
+        // Get message Y position - could be stored by index or by message key
+        let messageY = this.messagePositions.get(index);
+        if (messageY === undefined) {
+          // Try to get by message key (for messages that have been dragged)
+          const messageKey = MessagePositionUtils.generateMessageKey(message);
+          messageY = this.messagePositions.get(messageKey as any);
+        }
+
         if (messageY !== undefined) {
           // Get participant positions for both sender and receiver
           const senderPos = this.participantPositions.get(message.sender);
@@ -246,17 +339,18 @@ export class Canvas2DRenderer {
 
           if (senderPos && receiverPos) {
             // Calculate message endpoints X coordinates
-            const senderX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
-            const receiverX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
-            const minX = Math.min(senderX, receiverX);
-            const maxX = Math.max(senderX, receiverX);
+            const endpoints = CoordinateUtils.getMessageEndpoints(
+              senderPos,
+              receiverPos,
+              this.PARTICIPANT_WIDTH
+            );
 
             // Check if BOTH endpoints are fully inside the structure bounds
-            const isFullyInside =
-              messageY >= bounds.y + 25 &&
-              messageY <= bounds.y + bounds.height - 10 &&
-              minX >= bounds.x &&
-              maxX <= bounds.x + bounds.width;
+            const isFullyInside = GeometryUtils.isLineInBounds(
+              { fromX: endpoints.fromX, toX: endpoints.toX, y: messageY },
+              bounds,
+              { top: 25, bottom: 10, left: 0, right: 0 }
+            );
 
             if (isFullyInside) {
               // Check if not already in structure
@@ -274,19 +368,26 @@ export class Canvas2DRenderer {
       }
     });
 
-    // Update structure's statements with both existing and new messages
-    if ('statements' in structure) {
-      (structure as any).statements = existingMessages;
-    } else if ('branches' in structure && (structure as any).branches.length > 0) {
-      (structure as any).branches[0].statements = existingMessages;
-    }
+    // Only update if there are changes
+    if (messagesToRemove.length > 0) {
+      // Batch all model changes to trigger only one render at the end
+      this.model.batchChanges(() => {
+        // Update structure's statements with both existing and new messages
+        if ('statements' in structure) {
+          (structure as any).statements = existingMessages;
+        } else if ('branches' in structure && (structure as any).branches.length > 0) {
+          (structure as any).branches[0].statements = existingMessages;
+        }
 
-    // Remove messages from top level (in reverse order to maintain indices)
-    messagesToRemove.reverse().forEach(index => {
-      if (index !== structureIndex) {
-        this.model.removeStatement(index);
-      }
-    });
+        // Remove messages from top level (in reverse order to maintain indices)
+        messagesToRemove.reverse().forEach(index => {
+          if (index !== structureIndex) {
+            this.model.removeStatement(index);
+          }
+        });
+      });
+      // render() will be called automatically once after all batched changes
+    }
   }
 
   /**
@@ -294,13 +395,12 @@ export class Canvas2DRenderer {
    * @param messageData The message data including message object, Y coordinate, and parent structure
    */
   updateMessageContainment(messageData: { message: any; y: number; parentStructure: any }): void {
-    const { message, y: messageY, parentStructure } = messageData;
+    const { message, y: messageY } = messageData;
     const statements = this.model.getStatements();
 
     if (!message || !('sender' in message)) return;
 
     // Find which structure (if any) should contain this message based on full containment
-    let targetStructureIndex: number | null = null;
     let targetStructure: any = null;
 
     // Get participant positions for both sender and receiver
@@ -309,24 +409,24 @@ export class Canvas2DRenderer {
 
     if (senderPos && receiverPos) {
       // Calculate message endpoints X coordinates
-      const senderX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
-      const receiverX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
-      const minX = Math.min(senderX, receiverX);
-      const maxX = Math.max(senderX, receiverX);
+      const endpoints = CoordinateUtils.getMessageEndpoints(
+        senderPos,
+        receiverPos,
+        this.PARTICIPANT_WIDTH
+      );
 
-      statements.forEach((stmt, index) => {
+      statements.forEach((stmt) => {
         if ('type' in stmt && stmt.type && (stmt as any).bounds) {
           const bounds = (stmt as any).bounds;
 
           // Check if BOTH endpoints are fully inside the structure bounds
-          const isFullyInside =
-            messageY >= bounds.y + 25 &&
-            messageY <= bounds.y + bounds.height - 10 &&
-            minX >= bounds.x &&
-            maxX <= bounds.x + bounds.width;
+          const isFullyInside = GeometryUtils.isLineInBounds(
+            { fromX: endpoints.fromX, toX: endpoints.toX, y: messageY },
+            bounds,
+            { top: 25, bottom: 10, left: 0, right: 0 }
+          );
 
           if (isFullyInside) {
-            targetStructureIndex = index;
             targetStructure = stmt;
           }
         }
@@ -374,7 +474,10 @@ export class Canvas2DRenderer {
     if (targetStructure && currentLocation.type === 'top-level') {
       // Move from top-level to structure
       const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
-      this.messagePositions.set(messageKey as any, messageY);
+
+      // Convert absolute Y position to relative offset from structure top
+      const relativeOffset = messageY - (targetStructure as any).bounds.y;
+      this.messagePositions.set(messageKey as any, relativeOffset);
 
       // Insert message at the correct position based on Y coordinate
       if ('statements' in targetStructure) {
@@ -383,16 +486,20 @@ export class Canvas2DRenderer {
         this.insertMessageAtCorrectPosition(targetStructure.branches[0], message, messageY, 'statements');
       }
 
-      this.model.removeStatement(currentLocation.index!);
-
       // Clear index-based position
-      this.messagePositions.delete(currentLocation.index!);
+      const indexToRemove = currentLocation.index!;
+      this.messagePositions.delete(indexToRemove);
 
-      // Update the structure in model to persist the new order
-      const structureIndex = statements.findIndex(s => s === targetStructure);
-      if (structureIndex !== -1) {
-        this.model.updateStatement(structureIndex, targetStructure);
-      }
+      // Batch model changes to trigger only one render
+      this.model.batchChanges(() => {
+        this.model.removeStatement(indexToRemove);
+
+        // Update the structure in model to persist the new order
+        const structureIndex = statements.findIndex(s => s === targetStructure);
+        if (structureIndex !== -1) {
+          this.model.updateStatement(structureIndex, targetStructure);
+        }
+      });
 
     } else if (!targetStructure && currentLocation.type === 'structure') {
       // Move from structure to top-level
@@ -467,20 +574,26 @@ export class Canvas2DRenderer {
         this.insertMessageAtCorrectPosition(targetStructure.branches[0], message, messageY, 'statements');
       }
 
-      // Update both structures in model
-      const sourceIndex = statements.findIndex(s => s === sourceStructure);
-      const targetIndex = statements.findIndex(s => s === targetStructure);
-      if (sourceIndex !== -1) {
-        this.model.updateStatement(sourceIndex, sourceStructure);
-      }
-      if (targetIndex !== -1) {
-        this.model.updateStatement(targetIndex, targetStructure);
-      }
+      // Batch model changes to trigger only one render
+      this.model.batchChanges(() => {
+        // Update both structures in model
+        const sourceIndex = statements.findIndex(s => s === sourceStructure);
+        const targetIndex = statements.findIndex(s => s === targetStructure);
+        if (sourceIndex !== -1) {
+          this.model.updateStatement(sourceIndex, sourceStructure);
+        }
+        if (targetIndex !== -1) {
+          this.model.updateStatement(targetIndex, targetStructure);
+        }
+      });
     } else if (targetStructure && currentLocation.type === 'structure' && targetStructure === currentLocation.structure) {
       // Message stays in the same structure but position changed
       // Reorder messages in the structure based on Y coordinate
       const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
-      this.messagePositions.set(messageKey as any, messageY);
+
+      // BUGFIX: Convert absolute Y to relative offset from structure top
+      const relativeOffset = messageY - (targetStructure as any).bounds.y;
+      this.messagePositions.set(messageKey as any, relativeOffset);
 
       // Reorder the messages array based on Y positions
       this.reorderMessagesInStructure(targetStructure);
@@ -492,10 +605,13 @@ export class Canvas2DRenderer {
       }
     } else if (!targetStructure && currentLocation.type === 'top-level') {
       // Message stays at top-level but position changed
-      // Position is already updated by updateMessagePosition()
+      // Position is already updated by updateMessagePosition(), which calls render()
+      // This is a visual-only change, no model update needed
+      return; // Early return, no render needed (already rendered by updateMessagePosition)
     }
 
-    this.render();
+    // All other branches modify the model, which triggers automatic render via Observer pattern
+    // No explicit render() call needed
   }
 
   /**
@@ -617,21 +733,24 @@ export class Canvas2DRenderer {
   }
 
   /**
-   * Get element at point (for hit testing)
+   * Get participant positions for external use (for hit testing)
    */
-  getElementAtPoint(point: Point): DraggableElement | null {
-    // Check in reverse order (top elements first)
-    for (let i = this.elements.length - 1; i >= 0; i--) {
-      const element = this.elements[i];
-      const bounds = element.bounds;
+  getParticipantPositions(): Map<string, Point> {
+    return this.participantPositions;
+  }
 
-      if (point.x >= bounds.x && point.x <= bounds.x + bounds.width &&
-          point.y >= bounds.y && point.y <= bounds.y + bounds.height) {
-        return element;
-      }
-    }
-
-    return null;
+  /**
+   * Get layout constants for external use
+   */
+  getLayoutConstants() {
+    return {
+      PARTICIPANT_WIDTH: this.PARTICIPANT_WIDTH,
+      PARTICIPANT_HEIGHT: this.PARTICIPANT_HEIGHT,
+      PARTICIPANT_SPACING: this.PARTICIPANT_SPACING,
+      MESSAGE_SPACING: this.MESSAGE_SPACING,
+      MARGIN_TOP: this.MARGIN_TOP,
+      MARGIN_LEFT: this.MARGIN_LEFT
+    };
   }
 
   /**
@@ -639,28 +758,6 @@ export class Canvas2DRenderer {
    */
   getElements(): DraggableElement[] {
     return this.elements;
-  }
-
-  /**
-   * Get lifeline at point (for edge creation)
-   */
-  getLifelineAtPoint(point: Point): string | null {
-    const participants = this.model.getOrderedParticipants();
-
-    for (const participant of participants) {
-      const pos = this.participantPositions.get(participant.id);
-      if (!pos) continue;
-
-      const lifelineX = pos.x + this.PARTICIPANT_WIDTH / 2;
-      const lifelineStartY = pos.y + this.PARTICIPANT_HEIGHT;
-
-      // Check if point is near the lifeline (within 10px)
-      if (Math.abs(point.x - lifelineX) < 10 && point.y >= lifelineStartY) {
-        return participant.id;
-      }
-    }
-
-    return null;
   }
 
   render(): void {
@@ -753,7 +850,7 @@ export class Canvas2DRenderer {
     });
   }
 
-  private drawLifeline(participantId: string, pos: Point): void {
+  private drawLifeline(_participantId: string, pos: Point): void {
     const height = this.canvas.height / (window.devicePixelRatio || 1);
 
     this.ctx.save();
@@ -775,11 +872,12 @@ export class Canvas2DRenderer {
 
   private drawMessages(): void {
     const statements = this.model.getStatements();
-    this.drawMessagesRecursive(statements, 0, null);
+    this.drawMessagesRecursive(statements, 0, null, 0);
   }
 
-  private drawMessagesRecursive(statements: any[], messageOffset: number, parentStructure: any): number {
+  private drawMessagesRecursive(statements: any[], messageOffset: number, parentStructure: any, topLevelIndex: number): number {
     let messageIndex = messageOffset;
+    let currentTopLevelIndex = topLevelIndex;
 
     statements.forEach((statement, index) => {
       if ('sender' in statement && 'receiver' in statement) {
@@ -787,14 +885,18 @@ export class Canvas2DRenderer {
         this.drawMessage(message, index, messageIndex, parentStructure);
         messageIndex++;
       } else if ('type' in statement && statement.type) {
+        // Store the top-level statement index in the structure object for later reference
+        const structureWithIndex = { ...statement, _topLevelStatementIndex: currentTopLevelIndex };
+
         // Recursively draw messages in control structures
         if (statement.statements) {
-          messageIndex = this.drawMessagesRecursive(statement.statements, messageIndex, statement);
+          messageIndex = this.drawMessagesRecursive(statement.statements, messageIndex, structureWithIndex, currentTopLevelIndex);
         } else if (statement.branches) {
           statement.branches.forEach((branch: any) => {
-            messageIndex = this.drawMessagesRecursive(branch.statements, messageIndex, statement);
+            messageIndex = this.drawMessagesRecursive(branch.statements, messageIndex, structureWithIndex, currentTopLevelIndex);
           });
         }
+        currentTopLevelIndex++;
       }
     });
 
@@ -811,22 +913,31 @@ export class Canvas2DRenderer {
     let y: number;
     if (parentStructure && parentStructure.bounds) {
       // Message is inside a control structure
-      // First check if message has been dragged (stored with object key)
-      const messageKey = `${message.sender}-${message.receiver}-${message.text || ''}`;
-      const draggedY = this.messagePositions.get(messageKey as any);
+      // Get the CURRENT bounds of the structure (not the old bounds from parentStructure)
+      const currentStructureBounds = this.findCurrentStructureBounds(parentStructure);
+      const structureBounds = currentStructureBounds || parentStructure.bounds;
 
-      if (draggedY !== undefined) {
-        y = draggedY;
+      // First check if message has been dragged (stored with object key as relative offset)
+      const messageKey = MessagePositionUtils.generateMessageKey(message);
+      const draggedOffset = this.messagePositions.get(messageKey as any);
+
+      if (draggedOffset !== undefined) {
+        // Use stored offset relative to structure bounds
+        y = CoordinateUtils.toAbsoluteY(draggedOffset, structureBounds);
       } else {
         // Use default position relative to structure
-        const structureBounds = parentStructure.bounds;
         const messagesInStructure = parentStructure.statements ||
                                      (parentStructure.branches && parentStructure.branches[0]?.statements) || [];
         const messageIndexInStructure = messagesInStructure.findIndex((m: any) =>
           m.sender === message.sender && m.receiver === message.receiver && m.text === message.text
         );
 
-        y = structureBounds.y + 40 + messageIndexInStructure * this.MESSAGE_SPACING;
+        y = MessagePositionUtils.calculateStructureMessageY(
+          structureBounds,
+          messageIndexInStructure,
+          40,
+          this.MESSAGE_SPACING
+        );
       }
     } else {
       // Message is at top level
@@ -834,8 +945,13 @@ export class Canvas2DRenderer {
           (this.MARGIN_TOP + this.PARTICIPANT_HEIGHT + 50 + messageIndex * this.MESSAGE_SPACING);
     }
 
-    const fromX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
-    const toX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
+    const endpoints = CoordinateUtils.getMessageEndpoints(
+      senderPos,
+      receiverPos,
+      this.PARTICIPANT_WIDTH
+    );
+    const fromX = endpoints.fromX;
+    const toX = endpoints.toX;
 
     this.ctx.save();
 
@@ -935,6 +1051,9 @@ export class Canvas2DRenderer {
     const statements = this.model.getStatements();
     let messageIndex = 0;
 
+    // Clear bounds cache before redrawing
+    this.controlStructureBounds.clear();
+
     statements.forEach((statement, index) => {
       if ('type' in statement && statement.type) {
         this.drawControlStructure(statement as any, index, messageIndex);
@@ -947,7 +1066,7 @@ export class Canvas2DRenderer {
     });
   }
 
-  private drawControlStructure(structure: any, index: number, messageOffset: number): void {
+  private drawControlStructure(structure: any, index: number, _messageOffset: number): void {
     // Use bounds from structure if available
     let x: number, y: number, width: number, height: number;
 
@@ -1052,6 +1171,9 @@ export class Canvas2DRenderer {
     this.ctx.fillRect(x, y, handleSize, handleSize);
 
     this.ctx.restore();
+
+    // Cache the bounds for this control structure
+    this.controlStructureBounds.set(index, { x, y, width, height });
 
     // Add to elements for interaction
     this.elements.push({
@@ -1183,38 +1305,6 @@ export class Canvas2DRenderer {
 
   getSelectedMessage(): { message: Message; index: number; y: number } | null {
     return this.selectedMessage;
-  }
-
-  getEdgeHandle(point: Point): { type: 'start' | 'end'; message: Message; index: number } | null {
-    if (!this.selectedMessage) return null;
-
-    const { message, index, y } = this.selectedMessage;
-    const senderPos = this.participantPositions.get(message.sender);
-    const receiverPos = this.participantPositions.get(message.receiver);
-
-    if (!senderPos || !receiverPos) return null;
-
-    const fromX = senderPos.x + this.PARTICIPANT_WIDTH / 2;
-    const toX = receiverPos.x + this.PARTICIPANT_WIDTH / 2;
-    const handleRadius = 8;
-
-    // Check start handle
-    const startDist = Math.sqrt(
-      Math.pow(point.x - fromX, 2) + Math.pow(point.y - y, 2)
-    );
-    if (startDist <= handleRadius) {
-      return { type: 'start', message, index };
-    }
-
-    // Check end handle
-    const endDist = Math.sqrt(
-      Math.pow(point.x - toX, 2) + Math.pow(point.y - y, 2)
-    );
-    if (endDist <= handleRadius) {
-      return { type: 'end', message, index };
-    }
-
-    return null;
   }
 
   private drawEdgeHandles(): void {

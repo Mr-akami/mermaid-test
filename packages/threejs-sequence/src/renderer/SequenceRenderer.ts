@@ -304,7 +304,7 @@ export class SequenceRenderer {
   /**
    * Create arrowhead based on arrow type
    */
-  private createArrowhead(arrow: ArrowType, fromX: number, toX: number, y: number): THREE.Mesh | null {
+  private createArrowhead(arrow: ArrowType, fromX: number, toX: number, y: number): THREE.Mesh | THREE.Group | null {
     const direction = toX > fromX ? 1 : -1;
     const size = 8;
 

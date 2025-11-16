@@ -133,7 +133,7 @@ export class ContainmentHelper {
    */
   static extractMessagesFromStructure(
     structure: Loop | Alt | Opt,
-    insertAtIndex: number
+    _insertAtIndex: number
   ): Message[] {
     const messages: Message[] = [];
 

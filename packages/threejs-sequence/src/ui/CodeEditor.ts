@@ -102,7 +102,7 @@ export class CodeEditor {
     textarea.spellcheck = false;
 
     // Handle input with debounce
-    let timeout: NodeJS.Timeout;
+    let timeout: number;
     textarea.addEventListener('input', () => {
       clearTimeout(timeout);
       timeout = setTimeout(() => {

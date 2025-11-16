@@ -5,7 +5,6 @@ import { Canvas2DInteractionHandler } from './interactions/Canvas2DInteractionHa
 import { IconToolbar } from './ui/IconToolbar';
 import { PropertyPanel } from './ui/PropertyPanel';
 import { CodeEditor } from './ui/CodeEditor';
-import type { ArrowType } from './model/types';
 import './style.css';
 
 /**

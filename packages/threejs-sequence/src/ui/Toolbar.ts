@@ -70,7 +70,7 @@ export class Toolbar {
 
     // Options
     this.addSection(toolbar, 'Options', [
-      this.createCheckbox('Auto Number', this.model.getDiagram().autoNumber, (checked) => {
+      this.createCheckbox('Auto Number', this.model.getDiagram().autoNumber, (_checked) => {
         this.options.onToggleAutoNumber();
       })
     ]);

@@ -5,6 +5,7 @@ export type SelectedElement =
   | { type: 'participant'; data: Participant }
   | { type: 'message'; data: Message; index: number }
   | { type: 'note'; data: Note; index: number }
+  | { type: 'controlStructure'; data: any; index: number }
   | null;
 
 /**
@@ -97,7 +98,7 @@ export class PropertyPanel {
     this.element.appendChild(this.createInput(
       'ID',
       participant.id,
-      (value) => {
+      (_value) => {
         // Note: Changing ID requires more complex handling
         console.warn('ID change not implemented');
       },

@@ -2,6 +2,7 @@ import type { DiagramModel } from '../model/DiagramModel';
 import type { Canvas2DRenderer, Point, DraggableElement } from '../renderer/Canvas2DRenderer';
 import type { SelectedElement } from '../ui/PropertyPanel';
 import type { ArrowType, Message } from '../model/types';
+import { HitTestUtils } from '../utils/HitTestUtils';
 
 type InteractionMode = 'select' | 'add-participant' | 'add-actor' | 'create-edge' | 'rectangle-select';
 
@@ -102,12 +103,74 @@ export class Canvas2DInteractionHandler {
     };
   }
 
+  /**
+   * Helper: Get edge handle at point (uses HitTestUtils)
+   */
+  private getEdgeHandleAtPoint(
+    point: Point,
+    selectedMessage: { message: Message; index: number; y: number }
+  ): 'start' | 'end' | null {
+    const participantPositions = this.renderer.getParticipantPositions();
+    const { PARTICIPANT_WIDTH } = this.renderer.getLayoutConstants();
+
+    const senderPos = participantPositions.get(selectedMessage.message.sender);
+    const receiverPos = participantPositions.get(selectedMessage.message.receiver);
+
+    if (!senderPos || !receiverPos) return null;
+
+    const fromX = senderPos.x + PARTICIPANT_WIDTH / 2;
+    const toX = receiverPos.x + PARTICIPANT_WIDTH / 2;
+
+    return HitTestUtils.findEdgeHandle(
+      point,
+      { fromX, toX, y: selectedMessage.y },
+      8
+    );
+  }
+
+  /**
+   * Helper: Get lifeline at point (uses HitTestUtils)
+   */
+  private getLifelineAtPoint(point: Point): string | null {
+    const participants = this.model.getOrderedParticipants();
+    const participantPositions = this.renderer.getParticipantPositions();
+    const { PARTICIPANT_WIDTH, PARTICIPANT_HEIGHT } = this.renderer.getLayoutConstants();
+
+    const participantsWithPos = participants
+      .map(p => ({
+        id: p.id,
+        pos: participantPositions.get(p.id)!
+      }))
+      .filter(p => p.pos);
+
+    return HitTestUtils.findLifelineAt(
+      point,
+      participantsWithPos,
+      PARTICIPANT_WIDTH,
+      PARTICIPANT_HEIGHT,
+      10
+    );
+  }
+
   private onMouseDown(e: MouseEvent): void {
     const point = this.getCanvasPoint(e);
 
     if (this.mode === 'select') {
       // Check if clicking on edge handle first
-      const edgeHandle = this.renderer.getEdgeHandle(point);
+      const selectedMessage = this.renderer.getSelectedMessage();
+      let edgeHandle: { type: 'start' | 'end'; message: Message; index: number } | null = null;
+
+      if (selectedMessage) {
+        const edgeHandleType = this.getEdgeHandleAtPoint(point, selectedMessage);
+        if (edgeHandleType) {
+          edgeHandle = {
+            type: edgeHandleType,
+            message: selectedMessage.message,
+            index: selectedMessage.index
+          };
+        }
+      }
+
       if (edgeHandle) {
         this.isDraggingEdgeHandle = true;
         this.edgeHandleType = edgeHandle.type;
@@ -116,12 +179,13 @@ export class Canvas2DInteractionHandler {
         return;
       }
 
-      const element = this.renderer.getElementAtPoint(point);
+      const elements = this.renderer.getElements();
+      const element = HitTestUtils.findElementAt(point, elements);
 
       if (element) {
         // Check if clicking on a resize handle
         if (element.type === 'controlStructure') {
-          const handle = this.getResizeHandle(point, element);
+          const handle = HitTestUtils.findResizeHandle(point, element.bounds, 8);
           if (handle) {
             this.isResizing = true;
             this.resizeElement = element;
@@ -172,36 +236,12 @@ export class Canvas2DInteractionHandler {
     }
   }
 
-  private getResizeHandle(point: Point, element: DraggableElement): 'tl' | 'tr' | 'bl' | 'br' | null {
-    const handleSize = 8;
-    const { x, y, width, height } = element.bounds;
-
-    // Top-left
-    if (point.x >= x && point.x <= x + handleSize && point.y >= y && point.y <= y + handleSize) {
-      return 'tl';
-    }
-    // Top-right
-    if (point.x >= x + width - handleSize && point.x <= x + width && point.y >= y && point.y <= y + handleSize) {
-      return 'tr';
-    }
-    // Bottom-left
-    if (point.x >= x && point.x <= x + handleSize && point.y >= y + height - handleSize && point.y <= y + height) {
-      return 'bl';
-    }
-    // Bottom-right
-    if (point.x >= x + width - handleSize && point.x <= x + width && point.y >= y + height - handleSize && point.y <= y + height) {
-      return 'br';
-    }
-
-    return null;
-  }
-
   private onMouseMove(e: MouseEvent): void {
     const point = this.getCanvasPoint(e);
 
     if (this.isDraggingEdgeHandle) {
       // Update cursor during edge handle drag
-      const lifeline = this.renderer.getLifelineAtPoint(point);
+      const lifeline = this.getLifelineAtPoint(point);
       if (lifeline) {
         this.canvas.style.cursor = 'alias'; // Valid drop target
       } else {
@@ -242,8 +282,8 @@ export class Canvas2DInteractionHandler {
       if (newBounds.width >= 100 && newBounds.height >= 60) {
         // Update resizeElement bounds for mouse up
         this.resizeElement.bounds = newBounds;
-        // Don't persist during resize to avoid frequent updates
-        this.renderer.updateControlStructureBounds(this.resizeElement.data.index, newBounds, true, false);
+        // Don't persist or update containment during resize to avoid frequent updates and conflicts
+        this.renderer.updateControlStructureBounds(this.resizeElement.data.index, newBounds, false, false);
       }
     } else if (this.isDragging && this.dragElement) {
       if (this.dragElement.type === 'participant') {
@@ -258,7 +298,7 @@ export class Canvas2DInteractionHandler {
 
         // If message is inside a structure, use object-based update
         if (messageData.parentStructure) {
-          this.renderer.updateMessagePositionByObject(messageData.message, point.y);
+          this.renderer.updateMessagePositionByObject(messageData.message, point.y, messageData.parentStructure);
         } else {
           // Top-level message, use index-based update
           this.renderer.updateMessagePosition(messageData.index, point.y);
@@ -296,32 +336,40 @@ export class Canvas2DInteractionHandler {
     // Update cursor based on hover
     if (this.mode === 'select' && !this.isDragging && !this.isResizing && !this.isDraggingEdgeHandle) {
       // Check for edge handle hover
-      const edgeHandle = this.renderer.getEdgeHandle(point);
-      if (edgeHandle) {
-        this.canvas.style.cursor = 'grab';
-        return;
+      const selectedMessage = this.renderer.getSelectedMessage();
+      let hasEdgeHandle = false;
+
+      if (selectedMessage) {
+        const edgeHandleType = this.getEdgeHandleAtPoint(point, selectedMessage);
+        if (edgeHandleType) {
+          hasEdgeHandle = true;
+          this.canvas.style.cursor = 'grab';
+        }
       }
 
-      const element = this.renderer.getElementAtPoint(point);
-      if (element && element.type === 'controlStructure') {
-        const handle = this.getResizeHandle(point, element);
-        if (handle) {
-          // Set cursor for resize handles
-          const cursors = {
-            'tl': 'nwse-resize',
-            'tr': 'nesw-resize',
-            'bl': 'nesw-resize',
-            'br': 'nwse-resize'
-          };
-          this.canvas.style.cursor = cursors[handle];
+      if (!hasEdgeHandle) {
+        const elements = this.renderer.getElements();
+        const element = HitTestUtils.findElementAt(point, elements);
+        if (element && element.type === 'controlStructure') {
+          const handle = HitTestUtils.findResizeHandle(point, element.bounds, 8);
+          if (handle) {
+            // Set cursor for resize handles
+            const cursors = {
+              'tl': 'nwse-resize',
+              'tr': 'nesw-resize',
+              'bl': 'nesw-resize',
+              'br': 'nwse-resize'
+            };
+            this.canvas.style.cursor = cursors[handle];
+          } else {
+            this.canvas.style.cursor = 'move';
+          }
         } else {
-          this.canvas.style.cursor = 'move';
+          this.canvas.style.cursor = element ? 'move' : 'default';
         }
-      } else {
-        this.canvas.style.cursor = element ? 'move' : 'default';
       }
     } else if (this.mode === 'create-edge') {
-      const lifeline = this.renderer.getLifelineAtPoint(point);
+      const lifeline = this.getLifelineAtPoint(point);
       this.canvas.style.cursor = lifeline ? 'pointer' : 'crosshair';
     }
   }
@@ -333,7 +381,7 @@ export class Canvas2DInteractionHandler {
     const wasDraggingEdgeHandle = this.isDraggingEdgeHandle;
 
     if (this.isDraggingEdgeHandle && this.edgeHandleMessage && this.edgeHandleType) {
-      const lifeline = this.renderer.getLifelineAtPoint(point);
+      const lifeline = this.getLifelineAtPoint(point);
 
       if (lifeline) {
         // Update the message connection
@@ -406,7 +454,8 @@ export class Canvas2DInteractionHandler {
 
     // If we weren't dragging, resizing, or dragging edge handle, treat as a click for selection
     if (!wasDragging && !wasResizing && !wasDraggingEdgeHandle && this.mode === 'select') {
-      const element = this.renderer.getElementAtPoint(point);
+      const elements = this.renderer.getElements();
+      const element = HitTestUtils.findElementAt(point, elements);
       this.handleSelection(element);
     }
   }
@@ -423,7 +472,8 @@ export class Canvas2DInteractionHandler {
     } else if (this.mode === 'create-edge') {
       this.handleEdgeCreation(point);
     } else if (this.mode === 'select') {
-      const element = this.renderer.getElementAtPoint(point);
+      const elements = this.renderer.getElements();
+      const element = HitTestUtils.findElementAt(point, elements);
       this.handleSelection(element);
     }
   }
@@ -452,7 +502,7 @@ export class Canvas2DInteractionHandler {
   }
 
   private handleEdgeCreation(point: Point): void {
-    const lifeline = this.renderer.getLifelineAtPoint(point);
+    const lifeline = this.getLifelineAtPoint(point);
 
     if (!lifeline) return;
 
@@ -639,97 +689,6 @@ export class Canvas2DInteractionHandler {
 
     // Insert loop at the first selected position
     this.model.addStatement(loop, insertPosition);
-  }
-
-  private createAltFromSelection(statementIndices: number[], condition: string): void {
-    if (statementIndices.length === 0) return;
-
-    const allStatements = this.model.getStatements();
-    const selectedStatements = statementIndices
-      .sort((a, b) => a - b)
-      .map(index => allStatements[index]);
-
-    const insertPosition = Math.min(...statementIndices);
-
-    // Calculate bounds from selected elements
-    const elements = this.renderer.getElements();
-    let minX = Number.MAX_VALUE, maxX = 0, minY = Number.MAX_VALUE, maxY = 0;
-
-    selectedStatements.forEach((_, idx) => {
-      const element = elements.find(e => e.type === 'message' && e.data.index === statementIndices[idx]);
-      if (element) {
-        minX = Math.min(minX, element.bounds.x);
-        maxX = Math.max(maxX, element.bounds.x + element.bounds.width);
-        minY = Math.min(minY, element.bounds.y);
-        maxY = Math.max(maxY, element.bounds.y + element.bounds.height);
-      }
-    });
-
-    const padding = 30;
-    const altBounds = {
-      x: minX - padding,
-      y: minY - padding,
-      width: maxX - minX + padding * 2,
-      height: maxY - minY + padding * 2
-    };
-
-    const alt = {
-      type: 'alt' as const,
-      branches: [{ condition, statements: selectedStatements }],
-      bounds: altBounds
-    };
-
-    statementIndices.sort((a, b) => b - a).forEach(index => {
-      this.model.removeStatement(index);
-    });
-
-    this.model.addStatement(alt, insertPosition);
-  }
-
-  private createOptFromSelection(statementIndices: number[], condition: string): void {
-    if (statementIndices.length === 0) return;
-
-    const allStatements = this.model.getStatements();
-    const selectedStatements = statementIndices
-      .sort((a, b) => a - b)
-      .map(index => allStatements[index]);
-
-    const insertPosition = Math.min(...statementIndices);
-
-    // Calculate bounds
-    const elements = this.renderer.getElements();
-    let minX = Number.MAX_VALUE, maxX = 0, minY = Number.MAX_VALUE, maxY = 0;
-
-    selectedStatements.forEach((_, idx) => {
-      const element = elements.find(e => e.type === 'message' && e.data.index === statementIndices[idx]);
-      if (element) {
-        minX = Math.min(minX, element.bounds.x);
-        maxX = Math.max(maxX, element.bounds.x + element.bounds.width);
-        minY = Math.min(minY, element.bounds.y);
-        maxY = Math.max(maxY, element.bounds.y + element.bounds.height);
-      }
-    });
-
-    const padding = 30;
-    const optBounds = {
-      x: minX - padding,
-      y: minY - padding,
-      width: maxX - minX + padding * 2,
-      height: maxY - minY + padding * 2
-    };
-
-    const opt = {
-      type: 'opt' as const,
-      condition,
-      statements: selectedStatements,
-      bounds: optBounds
-    };
-
-    statementIndices.sort((a, b) => b - a).forEach(index => {
-      this.model.removeStatement(index);
-    });
-
-    this.model.addStatement(opt, insertPosition);
   }
 
   private drawSelectionRectangle(): void {

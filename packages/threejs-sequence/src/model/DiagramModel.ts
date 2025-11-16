@@ -4,17 +4,22 @@ import type {
   Box,
   Statement,
   Message,
-  Note,
-  ControlStructure,
   Activation
 } from './types';
+import { IdGenerator } from '../services/IdGenerator';
+import type { DiagramObserver } from './DiagramObserver';
 
 /**
  * DiagramModel manages the sequence diagram data and provides methods for editing
+ * Uses Observer pattern to notify renderers of changes
  */
 export class DiagramModel {
   private diagram: SequenceDiagram;
+  private observers: DiagramObserver[] = [];
+  // Legacy support for old change listeners
   private changeListeners: Array<() => void> = [];
+  // Flag to batch multiple changes and notify once
+  private batchingChanges = false;
 
   constructor(initialDiagram?: Partial<SequenceDiagram>) {
     this.diagram = {
@@ -46,20 +51,7 @@ export class DiagramModel {
   // ID generation
   generateId(prefix: string): string {
     const existingIds = this.diagram.participants.map(p => p.id);
-    const pattern = new RegExp(`^${prefix}-(\\d+)$`);
-    let maxNumber = 0;
-
-    existingIds.forEach(id => {
-      const match = id.match(pattern);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (num > maxNumber) {
-          maxNumber = num;
-        }
-      }
-    });
-
-    return `${prefix}-${String(maxNumber + 1).padStart(2, '0')}`;
+    return IdGenerator.generateId(prefix, existingIds);
   }
 
   // Participant operations
@@ -153,7 +145,35 @@ export class DiagramModel {
     this.notifyChange();
   }
 
-  // Change notification
+  // Observer pattern methods
+  /**
+   * Register an observer to be notified of diagram changes
+   * @param observer The observer to register
+   */
+  addObserver(observer: DiagramObserver): void {
+    if (!this.observers.includes(observer)) {
+      this.observers.push(observer);
+    }
+  }
+
+  /**
+   * Unregister an observer
+   * @param observer The observer to unregister
+   */
+  removeObserver(observer: DiagramObserver): void {
+    this.observers = this.observers.filter(o => o !== observer);
+  }
+
+  /**
+   * Notify all observers of a change
+   */
+  private notifyObservers(): void {
+    this.observers.forEach(observer => {
+      observer.onDiagramChanged();
+    });
+  }
+
+  // Legacy change notification (for backward compatibility)
   onChange(listener: () => void): () => void {
     this.changeListeners.push(listener);
     return () => {
@@ -162,7 +182,30 @@ export class DiagramModel {
   }
 
   private notifyChange(): void {
+    // Skip notification if batching changes
+    if (this.batchingChanges) {
+      return;
+    }
+    // Notify both observers and legacy listeners
+    this.notifyObservers();
     this.changeListeners.forEach(listener => listener());
+  }
+
+  /**
+   * Execute a function with batched change notifications
+   * All model changes within the function will only trigger one notification at the end
+   * @param fn Function to execute with batched changes
+   */
+  batchChanges(fn: () => void): void {
+    this.batchingChanges = true;
+    try {
+      fn();
+    } finally {
+      this.batchingChanges = false;
+      // Notify once after all changes
+      this.notifyObservers();
+      this.changeListeners.forEach(listener => listener());
+    }
   }
 
   // Helper methods for activation tracking
