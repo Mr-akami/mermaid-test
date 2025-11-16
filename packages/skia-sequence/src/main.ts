@@ -3,95 +3,22 @@ import './style.css'
 import CanvasKitInit, { type CanvasKit, type Font, type Paint, type PathEffect, type Surface } from 'canvaskit-wasm/bin/full/canvaskit.js'
 import canvaskitWasmUrl from 'canvaskit-wasm/bin/full/canvaskit.wasm?url'
 
-type ToolMode = 'select' | 'participant' | 'actor' | 'message' | 'note' | 'block'
-
-type ArrowType =
-  | '->'
-  | '-->'
-  | '->>'
-  | '-->>'
-  | '<<->>'
-  | '<<-->>'
-  | '-x'
-  | '--x'
-  | '-)'
-  | '--))'
-
-type BlockKind = 'loop' | 'alt' | 'opt' | 'par' | 'critical' | 'break' | 'rect'
-type NotePlacement = 'left' | 'right' | 'over'
-
-interface DiagramSettings {
-  width: number
-  height: number
-  autonumber: boolean
-  mirrorActors: boolean
-}
-
-interface ParticipantLink {
-  id: string
-  label: string
-  url: string
-}
-
-interface Participant {
-  id: string
-  name: string
-  label: string
-  kind: 'participant' | 'actor'
-  x: number
-  created: boolean
-  destroyed: boolean
-  color: string
-  links: ParticipantLink[]
-}
-
-interface Message {
-  id: string
-  fromId: string
-  toId: string
-  y: number
-  text: string
-  arrow: ArrowType
-  activateTarget: boolean
-  deactivateTarget: boolean
-  activateSource: boolean
-  deactivateSource: boolean
-}
-
-interface Note {
-  id: string
-  targetIds: string[]
-  placement: NotePlacement
-  text: string
-  y: number
-  height: number
-}
-
-interface Block {
-  id: string
-  kind: BlockKind
-  label: string
-  color: string
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-interface Selection {
-  type: 'participant' | 'message' | 'note' | 'block'
-  id: string
-}
-
-interface AppState {
-  tool: ToolMode
-  settings: DiagramSettings
-  participants: Participant[]
-  messages: Message[]
-  notes: Note[]
-  blocks: Block[]
-  selection: Selection | null
-}
+import {
+  DiagramModel,
+  createId,
+  type AppState,
+  type ArrowType,
+  type Block,
+  type BlockKind,
+  type DiagramSettings,
+  type Message,
+  type Note,
+  type NotePlacement,
+  type Participant,
+  type ParticipantLink,
+  type Selection,
+  type ToolMode
+} from './model/DiagramModel'
 
 type DragState =
   | { type: 'participant'; id: string; offsetX: number }
@@ -159,15 +86,6 @@ const METRICS = {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-const randomChunk = () => Math.random().toString(36).slice(2, 10)
-
-const createId = (prefix: string) => {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return `${prefix}-${crypto.randomUUID().slice(0, 8)}`
-  }
-  return `${prefix}-${randomChunk()}`
-}
-
 const splitAlias = (value: string) => value.split(/<br\s*\/?>/gi)
 
 const toMermaidColor = (value: string) => {
@@ -198,7 +116,11 @@ class SkiaSequenceEditor {
   private deleteButton: HTMLButtonElement
   private copyButton: HTMLButtonElement
 
-  private state: AppState
+  private model: DiagramModel
+
+  private get state(): AppState {
+    return this.model.getState()
+  }
   private dragState: DragState | null = null
   private pendingAnchor: MessageAnchor | null = null
 
@@ -224,7 +146,8 @@ class SkiaSequenceEditor {
     this.deleteButton = this.root.querySelector('[data-delete-selection]') as HTMLButtonElement
     this.copyButton = this.root.querySelector('[data-copy-mermaid]') as HTMLButtonElement
 
-    this.state = this.createInitialState()
+    this.model = new DiagramModel(this.createInitialState())
+    this.model.addListener(() => this.render())
 
     this.bindEvents()
     this.render()
@@ -427,17 +350,18 @@ class SkiaSequenceEditor {
   }
 
   private setTool(tool: ToolMode) {
-    this.state.tool = tool
     if (tool !== 'message') {
       this.pendingAnchor = null
     }
-    this.render()
+    this.model.update((state) => {
+      state.tool = tool
+    })
   }
 
   private setSelection(selection: Selection | null) {
-    this.state.selection = selection
-    this.renderProperties()
-    this.renderCanvas()
+    this.model.update((state) => {
+      state.selection = selection
+    })
   }
 
   private onKeyDown(event: KeyboardEvent) {
@@ -543,59 +467,69 @@ class SkiaSequenceEditor {
       return
     }
     const point = this.getPointerPosition(event)
+    const dragState = this.dragState
 
-    switch (this.dragState.type) {
+    switch (dragState.type) {
       case 'participant': {
-        const participant = this.findParticipant(this.dragState.id)
-        if (!participant) break
-        participant.x = clamp(point.x - this.dragState.offsetX, METRICS.participantWidth, this.state.settings.width - METRICS.participantWidth)
-        this.renderCanvas()
+        const { id, offsetX } = dragState
+        this.model.update((state) => {
+          const participant = state.participants.find((item) => item.id === id)
+          if (!participant) return
+          participant.x = clamp(point.x - offsetX, METRICS.participantWidth, state.settings.width - METRICS.participantWidth)
+        })
         break
       }
       case 'message': {
-        const message = this.findMessage(this.dragState.id)
-        if (!message) break
-        message.y = clamp(point.y - this.dragState.offsetY, METRICS.headerHeight + 40, this.state.settings.height - METRICS.footerPadding)
-        this.renderCanvas()
+        const { id, offsetY } = dragState
+        this.model.update((state) => {
+          const message = state.messages.find((item) => item.id === id)
+          if (!message) return
+          message.y = clamp(point.y - offsetY, METRICS.headerHeight + 40, state.settings.height - METRICS.footerPadding)
+        })
         break
       }
       case 'note': {
-        const note = this.findNote(this.dragState.id)
-        if (!note) break
-        note.y = clamp(point.y - this.dragState.offsetY, METRICS.headerHeight + 40, this.state.settings.height - METRICS.footerPadding - note.height)
-        this.renderCanvas()
+        const { id, offsetY } = dragState
+        this.model.update((state) => {
+          const note = state.notes.find((item) => item.id === id)
+          if (!note) return
+          note.y = clamp(point.y - offsetY, METRICS.headerHeight + 40, state.settings.height - METRICS.footerPadding - note.height)
+        })
         break
       }
       case 'block': {
-        const block = this.findBlock(this.dragState.id)
-        if (!block) break
-        block.x = clamp(point.x - this.dragState.offsetX, 40, this.state.settings.width - block.width - 40)
-        block.y = clamp(point.y - this.dragState.offsetY, METRICS.headerHeight + 20, this.state.settings.height - METRICS.footerPadding - block.height)
-        this.renderCanvas()
+        const { id, offsetX, offsetY } = dragState
+        this.model.update((state) => {
+          const block = state.blocks.find((item) => item.id === id)
+          if (!block) return
+          block.x = clamp(point.x - offsetX, 40, state.settings.width - block.width - 40)
+          block.y = clamp(point.y - offsetY, METRICS.headerHeight + 20, state.settings.height - METRICS.footerPadding - block.height)
+        })
         break
       }
       case 'block-handle': {
-        const block = this.findBlock(this.dragState.id)
-        if (!block) break
-        const dx = point.x - this.dragState.startX
-        const dy = point.y - this.dragState.startY
-        const original = this.dragState.original
-        if (this.dragState.handle === 'e') {
-          block.width = clamp(original.width + dx, 80, this.state.settings.width - original.x - 40)
-        } else if (this.dragState.handle === 'w') {
-          const newWidth = clamp(original.width - dx, 80, original.width + original.x - 40)
-          const diff = newWidth - original.width
-          block.width = newWidth
-          block.x = original.x - diff
-        } else if (this.dragState.handle === 's') {
-          block.height = clamp(original.height + dy, 60, this.state.settings.height - original.y - METRICS.footerPadding)
-        } else if (this.dragState.handle === 'n') {
-          const newHeight = clamp(original.height - dy, 60, original.height + original.y - METRICS.headerHeight)
-          const diff = newHeight - original.height
-          block.height = newHeight
-          block.y = original.y - diff
-        }
-        this.renderCanvas()
+        const { id, handle, startX, startY, original } = dragState
+        const dx = point.x - startX
+        const dy = point.y - startY
+        this.model.update((state) => {
+          const block = state.blocks.find((item) => item.id === id)
+          if (!block) return
+          if (handle === 'e') {
+            block.width = clamp(original.width + dx, 80, state.settings.width - original.x - 40)
+          } else if (handle === 'w') {
+            const newWidth = clamp(original.width - dx, 80, original.width + original.x - 40)
+            const diff = newWidth - original.width
+            block.width = newWidth
+            block.x = original.x - diff
+          } else if (handle === 's') {
+            block.height = clamp(original.height + dy, 60, state.settings.height - original.y - METRICS.footerPadding)
+          } else if (handle === 'n') {
+            const newHeight = clamp(original.height - dy, 60, original.height + original.y - METRICS.headerHeight)
+            const diff = newHeight - original.height
+            block.height = newHeight
+            block.y = original.y - diff
+          }
+        })
         break
       }
       case 'block-draft': {
@@ -623,11 +557,12 @@ class SkiaSequenceEditor {
           width,
           height
         }
-        this.state.blocks.push(block)
+        this.model.update((state) => {
+          state.blocks.push(block)
+        })
         this.setSelection({ type: 'block', id: block.id })
       }
       this.dragState = null
-      this.renderCanvas()
       return
     }
 
@@ -641,7 +576,8 @@ class SkiaSequenceEditor {
       return
     }
 
-    const from = this.pendingAnchor.participantId
+    const anchor = this.pendingAnchor!
+    const from = anchor.participantId
     const to = participantId
     const message: Message = {
       id: createId('msg'),
@@ -656,10 +592,11 @@ class SkiaSequenceEditor {
       deactivateSource: false
     }
 
-    this.state.messages.push(message)
     this.pendingAnchor = null
+    this.model.update((state) => {
+      state.messages.push(message)
+    })
     this.setSelection({ type: 'message', id: message.id })
-    this.render()
   }
 
   private createNoteFromClick(participant: Participant, point: Point) {
@@ -672,9 +609,10 @@ class SkiaSequenceEditor {
       height: 100
     }
 
-    this.state.notes.push(note)
+    this.model.update((state) => {
+      state.notes.push(note)
+    })
     this.setSelection({ type: 'note', id: note.id })
-    this.render()
   }
 
   private hitParticipant(point: Point): Participant | null {
@@ -770,29 +708,30 @@ class SkiaSequenceEditor {
       color: mode === 'actor' ? '#fde68a' : '#bfdbfe',
       links: []
     }
-    this.state.participants.push(participant)
+    this.model.update((state) => {
+      state.participants.push(participant)
+    })
     this.setSelection({ type: 'participant', id: participant.id })
-    this.render()
   }
 
   private deleteSelection() {
-    if (!this.state.selection) return
+    const selection = this.state.selection
+    if (!selection) return
 
-    const { type, id } = this.state.selection
-    if (type === 'participant') {
-      this.state.participants = this.state.participants.filter((participant) => participant.id !== id)
-      this.state.messages = this.state.messages.filter((message) => message.fromId !== id && message.toId !== id)
-      this.state.notes = this.state.notes.map((note) => ({ ...note, targetIds: note.targetIds.filter((targetId) => targetId !== id) }))
-    } else if (type === 'message') {
-      this.state.messages = this.state.messages.filter((message) => message.id !== id)
-    } else if (type === 'note') {
-      this.state.notes = this.state.notes.filter((note) => note.id !== id)
-    } else if (type === 'block') {
-      this.state.blocks = this.state.blocks.filter((block) => block.id !== id)
-    }
-
-    this.state.selection = null
-    this.render()
+    this.model.update((state) => {
+      if (selection.type === 'participant') {
+        state.participants = state.participants.filter((participant) => participant.id !== selection.id)
+        state.messages = state.messages.filter((message) => message.fromId !== selection.id && message.toId !== selection.id)
+        state.notes = state.notes.map((note) => ({ ...note, targetIds: note.targetIds.filter((targetId) => targetId !== selection.id) }))
+      } else if (selection.type === 'message') {
+        state.messages = state.messages.filter((message) => message.id !== selection.id)
+      } else if (selection.type === 'note') {
+        state.notes = state.notes.filter((note) => note.id !== selection.id)
+      } else if (selection.type === 'block') {
+        state.blocks = state.blocks.filter((block) => block.id !== selection.id)
+      }
+      state.selection = null
+    })
   }
 
   private copyMermaid() {
@@ -926,15 +865,16 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLInputElement>('[data-setting]').forEach((input) => {
       input.addEventListener('input', () => {
         const key = input.dataset.setting as keyof DiagramSettings
-        if (input.type === 'checkbox') {
-          this.state.settings[key] = input.checked as never
-        } else if (input.type === 'number') {
-          this.state.settings[key] = Number(input.value) as never
-        }
+        this.model.update((state) => {
+          if (input.type === 'checkbox') {
+            state.settings[key] = input.checked as never
+          } else if (input.type === 'number') {
+            state.settings[key] = Number(input.value) as never
+          }
+        })
         if (key === 'width' || key === 'height') {
           this.resizeCanvas()
         }
-        this.render()
       })
     })
 
@@ -985,12 +925,15 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLElement>('[data-participant-field]').forEach((element) => {
       element.addEventListener('input', () => {
         const field = element.dataset.participantField as keyof Participant
-        if (element instanceof HTMLInputElement && element.type === 'checkbox') {
-          participant[field] = element.checked as never
-        } else if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) {
-          participant[field] = element.value as never
-        }
-        this.render()
+        this.model.update((state) => {
+          const target = state.participants.find((item) => item.id === participant.id)
+          if (!target) return
+          if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+            target[field] = element.checked as never
+          } else if (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) {
+            target[field] = element.value as never
+          }
+        })
       })
     })
 
@@ -1008,33 +951,46 @@ class SkiaSequenceEditor {
 
     linksContainer.querySelectorAll<HTMLInputElement>('[data-link-field]').forEach((input) => {
       input.addEventListener('input', () => {
-        const link = participant.links.find((item) => item.id === input.dataset.linkId)
-        if (!link) return
-        if (input.dataset.linkField === 'label') {
-          link.label = input.value
-        } else if (input.dataset.linkField === 'url') {
-          link.url = input.value
-        }
-        this.renderMermaid()
+        const linkId = input.dataset.linkId
+        const field = input.dataset.linkField
+        if (!linkId || !field) return
+        this.model.update((state) => {
+          const target = state.participants.find((item) => item.id === participant.id)
+          if (!target) return
+          const link = target.links.find((item) => item.id === linkId)
+          if (!link) return
+          if (field === 'label') {
+            link.label = input.value
+          } else if (field === 'url') {
+            link.url = input.value
+          }
+        })
       })
     })
 
     linksContainer.querySelectorAll<HTMLButtonElement>('[data-remove-link]').forEach((button) => {
       button.addEventListener('click', () => {
         const id = button.dataset.removeLink
-        participant.links = participant.links.filter((link) => link.id !== id)
-        this.render()
+        if (!id) return
+        this.model.update((state) => {
+          const target = state.participants.find((item) => item.id === participant.id)
+          if (!target) return
+          target.links = target.links.filter((link) => link.id !== id)
+        })
       })
     })
 
     const addLinkButton = section.querySelector('[data-add-link]') as HTMLButtonElement
     addLinkButton.addEventListener('click', () => {
-      participant.links.push({
-        id: createId('link'),
-        label: 'Label',
-        url: 'https://example.com'
+      this.model.update((state) => {
+        const target = state.participants.find((item) => item.id === participant.id)
+        if (!target) return
+        target.links.push({
+          id: createId('link'),
+          label: 'Label',
+          url: 'https://example.com'
+        })
       })
-      this.render()
     })
 
     return section
@@ -1080,8 +1036,11 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-message-field]').forEach((element) => {
       element.addEventListener('input', () => {
         const field = element.dataset.messageField as keyof Message
-        message[field] = element.value as never
-        this.render()
+        this.model.update((state) => {
+          const target = state.messages.find((item) => item.id === message.id)
+          if (!target) return
+          target[field] = element.value as never
+        })
       })
       if (element instanceof HTMLSelectElement) {
         element.value = message[element.dataset.messageField as keyof Message] as string
@@ -1091,8 +1050,11 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLInputElement>('[data-message-flag]').forEach((checkbox) => {
       checkbox.addEventListener('input', () => {
         const field = checkbox.dataset.messageFlag as keyof Message
-        message[field] = checkbox.checked as never
-        this.render()
+        this.model.update((state) => {
+          const target = state.messages.find((item) => item.id === message.id)
+          if (!target) return
+          target[field] = checkbox.checked as never
+        })
       })
     })
 
@@ -1143,24 +1105,30 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-note-field]').forEach((element) => {
       element.addEventListener('input', () => {
         const field = element.dataset.noteField as keyof Note
-        if (element instanceof HTMLInputElement && element.type === 'number') {
-          note[field] = Number(element.value) as never
-        } else {
-          note[field] = element.value as never
-        }
-        this.render()
+        this.model.update((state) => {
+          const target = state.notes.find((item) => item.id === note.id)
+          if (!target) return
+          if (element instanceof HTMLInputElement && element.type === 'number') {
+            target[field] = Number(element.value) as never
+          } else {
+            target[field] = element.value as never
+          }
+        })
       })
     })
 
     section.querySelectorAll<HTMLInputElement>('[data-note-target]').forEach((checkbox) => {
       checkbox.addEventListener('input', () => {
         const id = checkbox.dataset.noteTarget!
-        if (checkbox.checked) {
-          if (!note.targetIds.includes(id)) note.targetIds.push(id)
-        } else {
-          note.targetIds = note.targetIds.filter((targetId) => targetId !== id)
-        }
-        this.render()
+        this.model.update((state) => {
+          const target = state.notes.find((item) => item.id === note.id)
+          if (!target) return
+          if (checkbox.checked) {
+            if (!target.targetIds.includes(id)) target.targetIds.push(id)
+          } else {
+            target.targetIds = target.targetIds.filter((targetId) => targetId !== id)
+          }
+        })
       })
     })
 
@@ -1201,12 +1169,15 @@ class SkiaSequenceEditor {
     section.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-block-field]').forEach((element) => {
       element.addEventListener('input', () => {
         const field = element.dataset.blockField as keyof Block
-        if (element instanceof HTMLInputElement && element.type === 'number') {
-          block[field] = Number(element.value) as never
-        } else {
-          block[field] = element.value as never
-        }
-        this.render()
+        this.model.update((state) => {
+          const target = state.blocks.find((item) => item.id === block.id)
+          if (!target) return
+          if (element instanceof HTMLInputElement && element.type === 'number') {
+            target[field] = Number(element.value) as never
+          } else {
+            target[field] = element.value as never
+          }
+        })
       })
     })
 
