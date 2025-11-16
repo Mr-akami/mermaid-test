@@ -1,0 +1,4 @@
+- Source is TypeScript (ES2022 target) bundled by Vite in strict mode; expect full type coverage, no implicit anys, and no unused locals/params.
+- Module format is ESNext with bundler-style resolution; imports should use explicit extensions only when required and stay tree-shake friendly.
+- Code generally keeps logic modular inside `packages/<renderer>-sequence` directories; follow existing patterns within peer renderer implementations when adding new code.
+- Aim to keep files ASCII-only unless absolutely required per repo instructions.

@@ -1,0 +1,3 @@
+- Run `pnpm build` (or at least `pnpm dev` locally) to ensure TypeScript compiles since no dedicated tests exist.
+- Manually exercise whichever renderer/package you touched via the Vite dev server because automated coverage is absent.
+- Summarize changes clearly for the user, including affected packages and any manual verification performed.

@@ -1,0 +1,3 @@
+- Purpose: Vite + TypeScript playground for experimenting with different sequence diagram renderers built atop various graphics engines (Skia, SVG, BabylonJS, DiagramJS, etc.).
+- Structure: root Vite app under `src`, documentation in `doc/`, and multiple renderer implementations under `packages/*-sequence` that can be linked into the app.
+- Tooling: pnpm workspace, ES modules, strict TS compilation. No backend services detected; everything is front-end/renderer focused.
